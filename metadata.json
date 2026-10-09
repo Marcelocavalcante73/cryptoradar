@@ -1,0 +1,6 @@
+{
+  "name": "CryptoRadar",
+  "description": "Plataforma mobile-first para análise técnica de criptomoedas, paper trading, rastreamento de sinais e gerenciamento de risco.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
