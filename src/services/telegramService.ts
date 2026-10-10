@@ -1,114 +1,145 @@
 /**
  * Serviço de Integração com Telegram Bot - CryptoRadar
- * Executa chamadas reais à API do Telegram para envio de alertas,
- * valida credenciais de forma estrita, mascara tokens para não expor segredos
- * e nunca declara envio com sucesso caso o disparo não tenha ocorrido.
+ * Executa requisições de forma segura através do backend (/api/telegram/test),
+ * mantendo o token de bot exclusivamente em variáveis de ambiente do servidor.
+ * Não envia tokens em URLs no navegador e relata honestamente o status de configuração.
  */
+
+export interface TelegramBackendStatus {
+  configured: boolean;
+  service: string;
+  status: 'CONFIGURED' | 'NOT_CONFIGURED';
+  message: string;
+}
 
 export interface TelegramSendResult {
   success: boolean;
+  configured: boolean;
   message: string;
-  maskedToken?: string;
   statusCode?: number;
 }
 
 /**
- * Mascara o token para exibição segura na interface (ex: 712345...89ab).
+ * Valida localmente o formato do destino do Telegram (canal @ ou ID numérico).
  */
-export function maskTelegramToken(token: string): string {
-  if (!token || token.length < 8) return '****';
-  return `${token.slice(0, 4)}...${token.slice(-4)}`;
+export function validateTelegramDestination(chatId: string): { isValid: boolean; error?: string } {
+  if (!chatId || !chatId.trim()) {
+    return { isValid: false, error: 'Informe o Chat ID ou o @canal de destino.' };
+  }
+  const clean = chatId.trim();
+  if (clean.includes('exemplo')) {
+    return { isValid: false, error: 'Substitua o identificador de exemplo pelo seu chat ID real.' };
+  }
+
+  const isValid = /^(@[a-zA-Z0-9_]{5,32}|-?[0-9]{5,16})$/.test(clean);
+  if (!isValid) {
+    return {
+      isValid: false,
+      error: 'Formato inválido. Use um ID numérico (ex: 123456789 ou -100123456789) ou um canal público com @ (ex: @meucanal).'
+    };
+  }
+
+  return { isValid: true };
 }
 
 /**
- * Valida o formato básico de um token do BotFather (números:caracteres).
+ * Consulta o backend para verificar se TELEGRAM_BOT_TOKEN está configurado no servidor.
  */
-export function isValidTokenFormat(token: string): boolean {
-  if (!token) return false;
-  const trimmed = token.trim();
-  // Formato: 123456789:ABCdefGHIjklMNOpqrSTUvwxYZ
-  return /^\d{6,12}:[A-Za-z0-9_-]{20,50}$/.test(trimmed);
+export async function getTelegramServerStatus(): Promise<TelegramBackendStatus> {
+  try {
+    const response = await fetch('/api/telegram/status', {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(4000)
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      return {
+        configured: Boolean(data?.configured),
+        service: 'telegram',
+        status: data?.configured ? 'CONFIGURED' : 'NOT_CONFIGURED',
+        message: data?.message || (data?.configured ? 'Backend pronto para envio.' : 'Token ausente no servidor.')
+      };
+    }
+
+    return {
+      configured: false,
+      service: 'telegram',
+      status: 'NOT_CONFIGURED',
+      message: `Backend retornou status HTTP ${response.status}. Verifique o servidor.`
+    };
+  } catch {
+    return {
+      configured: false,
+      service: 'telegram',
+      status: 'NOT_CONFIGURED',
+      message: 'Não foi possível conectar ao endpoint do backend (/api/telegram/status).'
+    };
+  }
 }
 
 /**
- * Dispara uma mensagem de teste real para o bot configurado.
+ * Dispara uma mensagem de teste através do backend seguro.
+ * O frontend NUNCA manipula ou transmite o token do bot.
  */
 export async function sendTelegramTestMessage(
-  token: string,
-  chatId: string
+  chatId: string,
+  customMessage?: string
 ): Promise<TelegramSendResult> {
-  const cleanToken = (token || '').trim();
-  const cleanChatId = (chatId || '').trim();
-
-  // 1. Verificação de token vazio ou placeholder de demonstração
-  if (!cleanToken || cleanToken.includes('exemplo') || cleanToken.includes('AAH')) {
+  const validation = validateTelegramDestination(chatId);
+  if (!validation.isValid) {
     return {
       success: false,
-      message: 'Token de bot ausente ou inválido. Forneça o token real gerado pelo @BotFather.',
-      maskedToken: maskTelegramToken(cleanToken)
+      configured: false,
+      message: validation.error || 'Destino inválido.'
     };
   }
 
-  // 2. Verificação de chat ID
-  if (!cleanChatId || cleanChatId.includes('exemplo')) {
-    return {
-      success: false,
-      message: 'Chat ID ou @canal ausente. Forneça o identificador de destino do Telegram.',
-      maskedToken: maskTelegramToken(cleanToken)
-    };
-  }
-
-  // 3. Validação do formato do token
-  if (!isValidTokenFormat(cleanToken)) {
-    return {
-      success: false,
-      message: 'Formato de Bot Token incorreto. O token deve seguir o padrão: 123456789:ABCDefgh...',
-      maskedToken: maskTelegramToken(cleanToken)
-    };
-  }
-
-  const masked = maskTelegramToken(cleanToken);
-
-  // 4. Execução real da requisição para api.telegram.org
   try {
-    const text = encodeURIComponent(
-      '🟢 *CryptoRadar - Teste de Alerta Conectado*\n\n' +
-      'Seu canal está configurado para receber sinais e execuções do Paper Trading em tempo real.'
-    );
-    const url = `https://api.telegram.org/bot${cleanToken}/sendMessage?chat_id=${encodeURIComponent(cleanChatId)}&text=${text}&parse_mode=Markdown`;
-
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(5000)
+    const response = await fetch('/api/telegram/test', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json'
+      },
+      body: JSON.stringify({
+        chatId: chatId.trim(),
+        message: customMessage
+      }),
+      signal: AbortSignal.timeout(8000)
     });
 
     const data = await response.json().catch(() => null);
 
-    if (response.ok && data?.ok) {
+    if (response.ok && data?.success) {
       return {
         success: true,
-        message: `Mensagem enviada com sucesso para o chat ${cleanChatId}!`,
-        maskedToken: masked,
+        configured: true,
+        message: data.message || `Mensagem enviada com sucesso para ${chatId.trim()}!`,
         statusCode: 200
       };
     }
 
-    const desc = data?.description || `Erro HTTP ${response.status}`;
+    const errorMsg = data?.error || (response.status === 503
+      ? 'Backend não configurado: adicione TELEGRAM_BOT_TOKEN no arquivo .env do servidor.'
+      : response.status === 429
+      ? 'Limite de requisições excedido no backend (máximo 5 mensagens/minuto).'
+      : `Erro ${response.status} ao processar envio.`);
+
     return {
       success: false,
-      message: `Telegram API recusou a requisição (${desc}). Verifique se o bot foi iniciado pelo usuário.`,
-      maskedToken: masked,
+      configured: data?.configured ?? false,
+      message: errorMsg,
       statusCode: response.status
     };
   } catch (err: any) {
     const isTimeout = err?.name === 'TimeoutError' || err?.message?.includes('timeout');
     return {
       success: false,
+      configured: false,
       message: isTimeout
-        ? 'Tempo limite de conexão esgotado ao contatar api.telegram.org.'
-        : 'Falha de rede ao conectar com a API do Telegram (bloqueio ou sem internet).',
-      maskedToken: masked
+        ? 'Tempo limite de conexão esgotado ao contatar o servidor.'
+        : 'Falha de conexão com o backend local do CryptoRadar (/api/telegram/test).'
     };
   }
 }

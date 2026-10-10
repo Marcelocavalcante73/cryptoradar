@@ -1,7 +1,8 @@
-import React, { useState, useMemo } from 'react';
-import { ArrowLeft, ArrowUpRight, ArrowDownRight, BarChart2, LineChart, Wallet, Info } from 'lucide-react';
-import { CryptoAsset, Timeframe } from '../../types/crypto';
-import { generateCandlesForAsset } from '../../services/mockData';
+import React, { useState, useEffect, useMemo } from 'react';
+import { ArrowLeft, ArrowUpRight, ArrowDownRight, BarChart2, LineChart, Wallet, Info, RefreshCw, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { CryptoAsset, CandleData, Timeframe } from '../../types/crypto';
+import { apiService, KlineFetchResult } from '../../services/apiService';
+import { calculateTechnicalDiagnosis } from '../../services/indicators';
 import { CandlestickChart } from './CandlestickChart';
 import { OrderBookMini } from './OrderBookMini';
 import { Badge } from '../common/Badge';
@@ -25,11 +26,41 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({
   const [showRsi, setShowRsi] = useState(true);
   const [showMacd, setShowMacd] = useState(false);
 
-  // Gera velas de alta fidelidade baseadas no ativo e timeframe
+  // Estado dos candles consultados
+  const [candles, setCandles] = useState<CandleData[]>([]);
+  const [isLoadingCandles, setIsLoadingCandles] = useState<boolean>(true);
+  const [klineResult, setKlineResult] = useState<KlineFetchResult | null>(null);
+
   const candleCount = timeframe === '15m' ? 48 : timeframe === '1h' ? 40 : 36;
-  const candles = useMemo(() => {
-    return generateCandlesForAsset(asset, candleCount);
-  }, [asset, timeframe, candleCount]);
+
+  // Carrega velas reais da Binance com fallback explícito se falhar
+  useEffect(() => {
+    let active = true;
+    setIsLoadingCandles(true);
+
+    apiService.fetchHistoricalKlines(asset.symbol, timeframe, asset, candleCount)
+      .then((res) => {
+        if (!active) return;
+        setCandles(res.candles);
+        setKlineResult(res);
+      })
+      .catch((err) => {
+        if (!active) return;
+        console.warn('Erro ao carregar candles da Binance:', err);
+      })
+      .finally(() => {
+        if (active) setIsLoadingCandles(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [asset.symbol, timeframe, candleCount, asset]);
+
+  // Diagnóstico técnico auditado calculado exclusivamente sobre as velas carregadas
+  const diagnosis = useMemo(() => {
+    return calculateTechnicalDiagnosis(candles);
+  }, [candles]);
 
   const isPositive = asset.change24h >= 0;
 
@@ -41,6 +72,8 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({
       maximumFractionDigits: val < 10 ? 4 : 2
     });
   };
+
+  const isLiveBinance = klineResult?.source === 'BINANCE_LIVE';
 
   return (
     <div className="space-y-3 pb-28">
@@ -55,19 +88,56 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({
         </button>
 
         <div className="flex items-center gap-1.5">
-          <Badge variant="demo" size="sm">VELAS SINTÉTICAS (DEMO)</Badge>
+          {isLoadingCandles ? (
+            <span className="flex items-center gap-1 text-[11px] text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded-lg">
+              <RefreshCw className="w-3 h-3 animate-spin" />
+              <span>Carregando Klines...</span>
+            </span>
+          ) : isLiveBinance ? (
+            <Badge variant="green" size="sm">
+              <span className="flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                BINANCE API (AO VIVO)
+              </span>
+            </Badge>
+          ) : (
+            <Badge variant="demo" size="sm">
+              <span className="flex items-center gap-1">
+                <AlertCircle className="w-3 h-3 text-amber-400" />
+                VELAS SINTÉTICAS (DEMO)
+              </span>
+            </Badge>
+          )}
+
           <span className="text-[10px] text-slate-400 font-mono">
-            {asset.isDemoData ? 'Modo DEMO' : 'Ref: Binance API'}
+            {isLiveBinance ? 'Endpoint Público Binance' : 'Modo Offline/Simulado'}
           </span>
         </div>
       </div>
 
-      {/* Alerta de dados sintéticos */}
-      <div className="px-3 py-1.5 bg-slate-900/80 border border-slate-800 rounded-xl text-[11px] text-slate-400 flex items-center justify-between">
-        <span>
-          <strong className="text-amber-300">Aviso:</strong> O gráfico utiliza velas sintéticas para demonstração visual. Não utilize candles sintéticos para backtests.
+      {/* Banner de Origem de Dados: Nunca engana o usuário */}
+      <div className={`px-3 py-2 rounded-xl text-[11px] flex items-center justify-between border ${
+        isLiveBinance
+          ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+          : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+      }`}>
+        <div className="flex items-center gap-2">
+          {isLiveBinance ? (
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          ) : (
+            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+          )}
+          <span>
+            {isLiveBinance ? (
+              <><strong>Velas Reais:</strong> Klines históricos obtidos diretamente da API pública da Binance ({timeframe}).</>
+            ) : (
+              <><strong>Modo de Demonstração:</strong> Conexão direta com Binance indisponível ({klineResult?.errorMessage || 'bloqueio regional/rede'}). Exibindo simulação didática sem misturar com dados reais.</>
+            )}
+          </span>
+        </div>
+        <span className="text-[10px] bg-slate-900/80 px-2 py-0.5 rounded font-mono font-bold shrink-0 ml-2">
+          {isLiveBinance ? 'LIVE' : 'DEMO'}
         </span>
-        <span className="text-[10px] bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded font-mono shrink-0 ml-2">DEMO</span>
       </div>
 
       {/* Cabeçalho do Ativo */}
@@ -251,35 +321,92 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({
         height={340}
       />
 
-      {/* Termômetro Técnico & Resumo Educacional */}
-      <div className="bg-[#121722] border border-slate-800 rounded-2xl p-3.5 space-y-2">
+      {/* Termômetro Técnico Auditado & Dinâmico */}
+      <div className="bg-[#121722] border border-slate-800 rounded-2xl p-3.5 space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
             <Info className="w-3.5 h-3.5 text-cyan-400" />
             Diagnóstico Técnico ({timeframe})
           </h3>
-          <span className="text-[10px] text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded font-mono">
-            EDUCACIONAL
+          <span className="text-[10px] text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded font-mono font-semibold">
+            {candles.length} Velas Analisadas
           </span>
         </div>
 
-        <div className="grid grid-cols-3 gap-2 text-center pt-1">
-          <div className="bg-slate-900/80 p-2 rounded-xl border border-slate-800">
-            <span className="text-[10px] text-slate-400 block">Osciladores</span>
-            <span className="text-xs font-bold text-amber-400 mt-0.5 block">Neutro</span>
-            <span className="text-[9px] text-slate-500">RSI: 54.2</span>
+        {/* 3 Blocos de Diagnóstico Calculados Dinamicamente */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          {/* 1. Osciladores (RSI de Wilder) */}
+          <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-slate-400 font-semibold uppercase">Osciladores</span>
+                <span className="text-[9px] text-slate-500 font-mono">{diagnosis.oscillators.valueDisplay}</span>
+              </div>
+              <span className={`text-xs font-bold mt-1 block ${
+                diagnosis.oscillators.sentiment === 'bullish'
+                  ? 'text-emerald-400'
+                  : diagnosis.oscillators.sentiment === 'bearish'
+                  ? 'text-rose-400'
+                  : diagnosis.oscillators.sentiment === 'insufficient'
+                  ? 'text-amber-400'
+                  : 'text-slate-300'
+              }`}>
+                {diagnosis.oscillators.label}
+              </span>
+            </div>
+            <p className="text-[10px] text-slate-400 mt-2 pt-2 border-t border-slate-800/80 leading-relaxed">
+              {diagnosis.oscillators.ruleExplanation}
+            </p>
           </div>
 
-          <div className="bg-slate-900/80 p-2 rounded-xl border border-slate-800">
-            <span className="text-[10px] text-slate-400 block">Médias Móveis</span>
-            <span className="text-xs font-bold text-emerald-400 mt-0.5 block">Compra Forte</span>
-            <span className="text-[9px] text-slate-500">EMA20 &gt; EMA50</span>
+          {/* 2. Médias Móveis (EMA20 e EMA50) */}
+          <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-slate-400 font-semibold uppercase">Médias Móveis</span>
+                <span className="text-[9px] text-slate-500 font-mono truncate max-w-[120px]">{diagnosis.movingAverages.valueDisplay}</span>
+              </div>
+              <span className={`text-xs font-bold mt-1 block ${
+                diagnosis.movingAverages.sentiment === 'bullish'
+                  ? 'text-emerald-400'
+                  : diagnosis.movingAverages.sentiment === 'bearish'
+                  ? 'text-rose-400'
+                  : diagnosis.movingAverages.sentiment === 'insufficient'
+                  ? 'text-amber-400'
+                  : 'text-slate-300'
+              }`}>
+                {diagnosis.movingAverages.label}
+              </span>
+            </div>
+            <p className="text-[10px] text-slate-400 mt-2 pt-2 border-t border-slate-800/80 leading-relaxed">
+              {diagnosis.movingAverages.ruleExplanation}
+            </p>
           </div>
 
-          <div className="bg-slate-900/80 p-2 rounded-xl border border-slate-800">
-            <span className="text-[10px] text-slate-400 block">Resumo dos Sinais</span>
-            <span className="text-xs font-bold text-emerald-400 mt-0.5 block">11 Compra / 3 Venda</span>
-            <span className="text-[9px] text-slate-500">Volatilidade Média</span>
+          {/* 3. Consenso dos Sinais Reais */}
+          <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800 flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-slate-400 font-semibold uppercase">Consenso Técnico</span>
+                <span className="text-[9px] text-slate-500 font-mono">
+                  {diagnosis.summary.buyCount} Compra / {diagnosis.summary.sellCount} Venda
+                </span>
+              </div>
+              <span className={`text-xs font-bold mt-1 block ${
+                diagnosis.summary.sentiment === 'bullish'
+                  ? 'text-emerald-400'
+                  : diagnosis.summary.sentiment === 'bearish'
+                  ? 'text-rose-400'
+                  : diagnosis.summary.sentiment === 'insufficient'
+                  ? 'text-amber-400'
+                  : 'text-slate-300'
+              }`}>
+                {diagnosis.summary.verdict}
+              </span>
+            </div>
+            <p className="text-[10px] text-slate-400 mt-2 pt-2 border-t border-slate-800/80 leading-relaxed">
+              {diagnosis.summary.ruleExplanation}
+            </p>
           </div>
         </div>
       </div>

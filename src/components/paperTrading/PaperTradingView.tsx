@@ -11,6 +11,7 @@ interface PaperTradingViewProps {
   onClosePosition: (positionId: string) => void;
   onCancelPendingOrder: (positionId: string) => void;
   onResetAccount: () => void;
+  onLoadDemoAccount?: () => void;
   onSelectCoinBySymbol: (symbol: string) => void;
 }
 
@@ -21,9 +22,11 @@ export const PaperTradingView: React.FC<PaperTradingViewProps> = ({
   onClosePosition,
   onCancelPendingOrder,
   onResetAccount,
+  onLoadDemoAccount,
   onSelectCoinBySymbol
 }) => {
   const [activeTab, setActiveTab] = useState<'positions' | 'pending' | 'history'>('positions');
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   // Mapa de preços atuais atualizados
   const priceMap = new Map<string, number>();
@@ -125,27 +128,68 @@ export const PaperTradingView: React.FC<PaperTradingViewProps> = ({
         </div>
 
         {/* Botões de Ação do Header */}
-        <div className="grid grid-cols-2 gap-2 mt-4">
-          <button
-            onClick={onOpenNewTradeModal}
-            className="w-full bg-emerald-500 hover:bg-emerald-400 active:scale-[0.98] text-slate-950 font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-md shadow-emerald-500/20 transition"
-          >
-            <Plus className="w-4 h-4" />
-            Nova Operação
-          </button>
+        <div className="mt-4 space-y-2">
+          {showResetConfirm ? (
+            <div className="bg-rose-500/10 border border-rose-500/30 rounded-xl p-2.5 flex items-center justify-between text-xs">
+              <span className="text-rose-300 font-medium">Resetar para conta limpa com $10,000 USDT?</span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onResetAccount();
+                    setShowResetConfirm(false);
+                  }}
+                  className="bg-rose-500 hover:bg-rose-400 text-white font-bold px-2.5 py-1 rounded-lg text-xs transition"
+                >
+                  Sim, Zerar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowResetConfirm(false)}
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-1 rounded-lg text-xs transition"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={onOpenNewTradeModal}
+                className="w-full bg-emerald-500 hover:bg-emerald-400 active:scale-[0.98] text-slate-950 font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-md shadow-emerald-500/20 transition"
+              >
+                <Plus className="w-4 h-4" />
+                Nova Operação
+              </button>
 
-          <button
-            onClick={() => {
-              if (window.confirm('Deseja resetar a conta de Paper Trading para $10,000 USDT? As posições atuais serão limpas.')) {
-                onResetAccount();
-              }
-            }}
-            className="w-full bg-slate-900 hover:bg-slate-800 active:scale-[0.98] text-slate-300 hover:text-white border border-slate-800 py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 transition"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            Resetar Saldo
-          </button>
+              <button
+                onClick={() => setShowResetConfirm(true)}
+                className="w-full bg-slate-900 hover:bg-slate-800 active:scale-[0.98] text-slate-300 hover:text-white border border-slate-800 py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 transition"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Iniciar Conta Limpa
+              </button>
+            </div>
+          )}
         </div>
+      </div>
+
+      {/* Banner de Aviso de Simulação */}
+      <div className="px-3 py-2 bg-slate-900/90 border border-slate-800 rounded-xl text-[11px] text-slate-400 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="w-4 h-4 text-cyan-400 shrink-0" />
+          <span>
+            <strong className="text-slate-200">Ambiente de Simulação (Paper Trading):</strong> Todas as operações utilizam saldo virtual fictício sem risco financeiro.
+          </span>
+        </div>
+        {onLoadDemoAccount && account.positions.length === 0 && account.closedHistory.length === 0 && (
+          <button
+            onClick={onLoadDemoAccount}
+            className="text-[10px] bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 px-2 py-0.5 rounded font-mono shrink-0 ml-2 transition"
+          >
+            Carregar Demo
+          </button>
+        )}
       </div>
 
       {/* Abas: Posições Abertas vs Ordens Limite Pendentes vs Histórico */}

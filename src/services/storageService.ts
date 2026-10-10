@@ -24,15 +24,34 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   telegram: {
     enabled: false,
-    botTokenPlaceholder: '712345678:AAH...exemplo',
+    botTokenPlaceholder: '',
     chatIdPlaceholder: '@cryptoradar_alertas_me',
     notifyOnSignals: true,
     notifyOnPaperExecution: true
   }
 };
 
+/**
+ * Conta Inicial Limpa:
+ * Permite ao usuário iniciar o Paper Trading com estado 100% zerado e sem dados residuais de exemplo.
+ */
 export const INITIAL_PAPER_ACCOUNT: PaperAccount = {
-  virtualBalance: 5664.71,
+  virtualBalance: 10000.00,
+  initialBalance: 10000.00,
+  totalTrades: 0,
+  winTrades: 0,
+  lossTrades: 0,
+  totalFeesPaid: 0,
+  positions: [],
+  closedHistory: []
+};
+
+/**
+ * Conjunto de dados demonstrativos estritamente identificados como fictícios (isDemo: true)
+ * para fins de visualização de exemplo quando o usuário optar por carregá-los.
+ */
+export const DEMO_SAMPLE_PAPER_ACCOUNT: PaperAccount = {
+  virtualBalance: 5663.44,
   initialBalance: 10000.00,
   totalTrades: 3,
   winTrades: 1,
@@ -40,7 +59,7 @@ export const INITIAL_PAPER_ACCOUNT: PaperAccount = {
   totalFeesPaid: 4.79,
   positions: [
     {
-      id: 'pos-101',
+      id: 'demo-pos-101',
       symbol: 'BTCUSDT',
       direction: 'LONG',
       orderType: 'MARKET',
@@ -57,7 +76,7 @@ export const INITIAL_PAPER_ACCOUNT: PaperAccount = {
       isDemo: true
     },
     {
-      id: 'pos-102',
+      id: 'demo-pos-102',
       symbol: 'SOLUSDT',
       direction: 'LONG',
       orderType: 'MARKET',
@@ -76,7 +95,7 @@ export const INITIAL_PAPER_ACCOUNT: PaperAccount = {
   ],
   closedHistory: [
     {
-      id: 'pos-099',
+      id: 'demo-pos-099',
       symbol: 'ETHUSDT',
       direction: 'LONG',
       orderType: 'MARKET',
@@ -103,6 +122,7 @@ export const INITIAL_PAPER_ACCOUNT: PaperAccount = {
 export const StorageService = {
   getSettings(): AppSettings {
     try {
+      if (typeof localStorage === 'undefined') return DEFAULT_SETTINGS;
       const data = localStorage.getItem(SETTINGS_KEY);
       return data ? { ...DEFAULT_SETTINGS, ...JSON.parse(data) } : DEFAULT_SETTINGS;
     } catch {
@@ -112,6 +132,7 @@ export const StorageService = {
 
   saveSettings(settings: AppSettings): void {
     try {
+      if (typeof localStorage === 'undefined') return;
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
     } catch (e) {
       console.warn('Falha ao salvar configurações no localStorage', e);
@@ -120,6 +141,7 @@ export const StorageService = {
 
   getPaperAccount(): PaperAccount {
     try {
+      if (typeof localStorage === 'undefined') return INITIAL_PAPER_ACCOUNT;
       const data = localStorage.getItem(PAPER_KEY);
       return data ? JSON.parse(data) : INITIAL_PAPER_ACCOUNT;
     } catch {
@@ -129,6 +151,7 @@ export const StorageService = {
 
   savePaperAccount(account: PaperAccount): void {
     try {
+      if (typeof localStorage === 'undefined') return;
       localStorage.setItem(PAPER_KEY, JSON.stringify(account));
     } catch (e) {
       console.warn('Falha ao salvar conta simulada no localStorage', e);
@@ -148,5 +171,10 @@ export const StorageService = {
     };
     StorageService.savePaperAccount(fresh);
     return fresh;
+  },
+
+  loadDemoAccount(): PaperAccount {
+    StorageService.savePaperAccount(DEMO_SAMPLE_PAPER_ACCOUNT);
+    return DEMO_SAMPLE_PAPER_ACCOUNT;
   }
 };

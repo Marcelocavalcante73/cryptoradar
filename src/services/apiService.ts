@@ -1,5 +1,6 @@
-import { CryptoAsset } from '../types/crypto';
-import { INITIAL_ASSETS } from './mockData';
+import { CryptoAsset, CandleData, Timeframe } from '../types/crypto';
+import { INITIAL_ASSETS, generateCandlesForAsset } from './mockData';
+import { calculateAllIndicators } from './indicators';
 
 export type ExchangeStatus = 'CONNECTED' | 'DISCONNECTED' | 'NOT_IMPLEMENTED' | 'OFFLINE_DEMO';
 
@@ -13,10 +14,84 @@ export interface ExchangeHealth {
   errorMessage?: string;
 }
 
+export interface KlineFetchResult {
+  candles: CandleData[];
+  isLive: boolean;
+  source: 'BINANCE_LIVE' | 'DEMO_SYNTHETIC';
+  symbol: string;
+  timeframe: Timeframe;
+  errorMessage?: string;
+}
+
 export interface MarketDataProvider {
   fetchTickers(): Promise<CryptoAsset[]>;
   fetchTickerBySymbol(symbol: string): Promise<CryptoAsset | null>;
+  fetchHistoricalKlines(symbol: string, timeframe: Timeframe, assetFallback?: CryptoAsset, limit?: number): Promise<KlineFetchResult>;
   checkExchangeHealth(): Promise<{ binance: ExchangeHealth; bybit: ExchangeHealth }>;
+}
+
+/**
+ * Formata o timestamp de abertura de um candle em formato amigável para exibição.
+ */
+export function formatBinanceKlineTime(timestamp: number, timeframe: Timeframe): string {
+  const d = new Date(timestamp);
+  const day = d.getDate().toString().padStart(2, '0');
+  const month = (d.getMonth() + 1).toString().padStart(2, '0');
+  const hours = d.getHours().toString().padStart(2, '0');
+  const minutes = d.getMinutes().toString().padStart(2, '0');
+
+  if (timeframe === '1D' || timeframe === '1W') {
+    return `${day}/${month}`;
+  }
+  return `${day}/${month} ${hours}:${minutes}`;
+}
+
+/**
+ * Converte o timeframe do CryptoRadar para o intervalo oficial da Binance.
+ */
+export function timeframeToBinanceInterval(tf: Timeframe): string {
+  switch (tf) {
+    case '15m': return '15m';
+    case '1h': return '1h';
+    case '4h': return '4h';
+    case '1D': return '1d';
+    case '1W': return '1w';
+    default: return '4h';
+  }
+}
+
+/**
+ * Converte um elemento bruto da API de Klines da Binance para o tipo CandleData.
+ */
+export function parseBinanceKline(raw: any[], timeframe: Timeframe, decimals: number = 2): CandleData | null {
+  if (!Array.isArray(raw) || raw.length < 6) return null;
+  const timestamp = Number(raw[0]);
+  const open = parseFloat(raw[1]);
+  const high = parseFloat(raw[2]);
+  const low = parseFloat(raw[3]);
+  const close = parseFloat(raw[4]);
+  const volume = parseFloat(raw[5]);
+
+  if (
+    !Number.isFinite(timestamp) ||
+    !Number.isFinite(open) ||
+    !Number.isFinite(high) ||
+    !Number.isFinite(low) ||
+    !Number.isFinite(close) ||
+    open <= 0
+  ) {
+    return null;
+  }
+
+  return {
+    time: formatBinanceKlineTime(timestamp, timeframe),
+    timestamp,
+    open: Number(open.toFixed(decimals)),
+    high: Number(high.toFixed(decimals)),
+    low: Number(low.toFixed(decimals)),
+    close: Number(close.toFixed(decimals)),
+    volume: Number(volume.toFixed(2))
+  };
 }
 
 export class CryptoApiService implements MarketDataProvider {
@@ -134,6 +209,106 @@ export class CryptoApiService implements MarketDataProvider {
   async fetchTickerBySymbol(symbol: string): Promise<CryptoAsset | null> {
     const list = await this.fetchTickers();
     return list.find((a) => a.symbol === symbol) || null;
+  }
+
+  /**
+   * Consulta candles históricos reais na API pública oficial da Binance.
+   * Suporta timeframes 15m, 1h, 4h, 1D, 1W.
+   * Não mistura candles sintéticos com reais. Se a API falhar, reporta explicitamente
+   * o estado offline/demonstração.
+   */
+  async fetchHistoricalKlines(
+    symbol: string,
+    timeframe: Timeframe,
+    assetFallback?: CryptoAsset,
+    limit: number = 60
+  ): Promise<KlineFetchResult> {
+    const interval = timeframeToBinanceInterval(timeframe);
+    const decimals = assetFallback && assetFallback.price < 10 ? 4 : 2;
+
+    // Tentativas ordenadas: endpoint principal da Binance e mirror público oficial Binance Vision
+    const endpoints = [
+      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
+      `https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
+    ];
+
+    let lastError: string | undefined;
+
+    for (const url of endpoints) {
+      try {
+        const response = await fetch(url, {
+          headers: { Accept: 'application/json' },
+          signal: AbortSignal.timeout(5000)
+        });
+
+        if (!response.ok) {
+          lastError = `Status HTTP ${response.status}`;
+          continue;
+        }
+
+        const rawKlines = await response.json();
+        if (!Array.isArray(rawKlines) || rawKlines.length === 0) {
+          lastError = 'Resposta de klines vazia ou formato inválido';
+          continue;
+        }
+
+        const parsedCandles: CandleData[] = [];
+        for (const item of rawKlines) {
+          const c = parseBinanceKline(item, timeframe, decimals);
+          if (c) {
+            parsedCandles.push(c);
+          }
+        }
+
+        if (parsedCandles.length < 5) {
+          lastError = 'Quantidade de velas válidas insuficiente retornada pela API';
+          continue;
+        }
+
+        // Sucesso real: calcula todos os indicadores nas velas reais obtidas
+        const candlesWithIndicators = calculateAllIndicators(parsedCandles, decimals);
+
+        return {
+          candles: candlesWithIndicators,
+          isLive: true,
+          source: 'BINANCE_LIVE',
+          symbol,
+          timeframe
+        };
+      } catch (err: any) {
+        lastError = err?.message || 'Erro de rede ou timeout';
+      }
+    }
+
+    // Se nenhum endpoint público respondeu, gera velas sintéticas devidamente sinalizadas
+    const fallbackAsset = assetFallback || this.fallbackAssets.find((a) => a.symbol === symbol) || {
+      id: symbol.toLowerCase(),
+      symbol,
+      baseAsset: symbol.replace('USDT', ''),
+      quoteAsset: 'USDT',
+      name: symbol,
+      price: 100,
+      change24h: 0,
+      high24h: 105,
+      low24h: 95,
+      volume24h: 1000000,
+      marketCap: 10000000,
+      exchanges: ['binance'],
+      sparkline: [100, 101, 102],
+      lastUpdated: new Date().toLocaleTimeString('pt-BR'),
+      isDemoData: true
+    };
+
+    const syntheticCandles = generateCandlesForAsset(fallbackAsset, limit);
+
+    return {
+      candles: syntheticCandles,
+      isLive: false,
+      source: 'DEMO_SYNTHETIC',
+      symbol,
+      timeframe,
+      errorMessage: `Falha ao consultar API da Binance (${lastError || 'indisponível'}). Exibindo simulação sintética.`
+    };
   }
 
   /**

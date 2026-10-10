@@ -401,3 +401,236 @@ export function calculateFearGreedIndex(assets: CryptoAsset[]): SentimentIndex {
     totalAssets: assets.length
   };
 }
+
+export interface TechnicalDiagnosis {
+  oscillators: {
+    label: string;
+    sentiment: 'bullish' | 'bearish' | 'neutral' | 'insufficient';
+    valueDisplay: string;
+    ruleExplanation: string;
+  };
+  movingAverages: {
+    label: string;
+    sentiment: 'bullish' | 'bearish' | 'neutral' | 'insufficient';
+    valueDisplay: string;
+    ruleExplanation: string;
+  };
+  summary: {
+    buyCount: number;
+    sellCount: number;
+    neutralCount: number;
+    totalEvaluated: number;
+    verdict: string;
+    sentiment: 'bullish' | 'bearish' | 'neutral' | 'insufficient';
+    ruleExplanation: string;
+  };
+}
+
+/**
+ * Realiza o diagnóstico técnico auditado sobre os candles e indicadores efetivamente carregados.
+ * Identifica períodos de aquecimento e emite "dados insuficientes" quando os requisitos mínimos
+ * de cada indicador não foram atingidos.
+ */
+export function calculateTechnicalDiagnosis(candles: CandleData[]): TechnicalDiagnosis {
+  if (!candles || candles.length === 0) {
+    return {
+      oscillators: {
+        label: 'Dados Insuficientes',
+        sentiment: 'insufficient',
+        valueDisplay: 'Sem velas carregadas',
+        ruleExplanation: 'Aguardando carregamento da série temporal de preços.'
+      },
+      movingAverages: {
+        label: 'Dados Insuficientes',
+        sentiment: 'insufficient',
+        valueDisplay: 'Sem velas carregadas',
+        ruleExplanation: 'Aguardando carregamento da série temporal de preços.'
+      },
+      summary: {
+        buyCount: 0,
+        sellCount: 0,
+        neutralCount: 0,
+        totalEvaluated: 0,
+        verdict: 'Dados Insuficientes',
+        sentiment: 'insufficient',
+        ruleExplanation: 'Nenhum candle disponível para avaliação técnica.'
+      }
+    };
+  }
+
+  const latest = candles[candles.length - 1];
+
+  // 1. Diagnóstico de Osciladores (RSI de Wilder de 14 períodos)
+  let oscLabel = 'Neutro';
+  let oscSentiment: 'bullish' | 'bearish' | 'neutral' | 'insufficient' = 'neutral';
+  let oscValueDisplay = 'RSI: --';
+  let oscRule = '';
+
+  if (latest.rsi === undefined) {
+    oscLabel = 'Dados Insuficientes';
+    oscSentiment = 'insufficient';
+    oscValueDisplay = `Aquecimento (${candles.length}/14 velas)`;
+    oscRule = 'O RSI de Wilder exige no mínimo 14 períodos completos para estabilizar o cálculo de ganhos e perdas médios.';
+  } else {
+    const rsi = latest.rsi;
+    oscValueDisplay = `RSI(14): ${rsi.toFixed(1)}`;
+    if (rsi >= 70) {
+      oscLabel = 'Sobrecomprado';
+      oscSentiment = 'bearish';
+      oscRule = 'RSI ≥ 70 indica ativo em zona de exaustão compradora e risco elevado de correção.';
+    } else if (rsi <= 30) {
+      oscLabel = 'Sobrevendido';
+      oscSentiment = 'bullish';
+      oscRule = 'RSI ≤ 30 indica ativo em sobrevenda extrema com assimetria técnica favorável a repique.';
+    } else if (rsi > 55) {
+      oscLabel = 'Momentum de Alta';
+      oscSentiment = 'bullish';
+      oscRule = 'RSI entre 55 e 70 sustenta viés comprador sem estar em nível de sobrecompra.';
+    } else if (rsi < 45) {
+      oscLabel = 'Pressão Vendedora';
+      oscSentiment = 'bearish';
+      oscRule = 'RSI entre 30 e 45 aponta domínio da pressão vendedora no curto prazo.';
+    } else {
+      oscLabel = 'Neutro';
+      oscSentiment = 'neutral';
+      oscRule = 'RSI na faixa de 45 a 55 sinaliza equilíbrio entre oferta e demanda.';
+    }
+  }
+
+  // 2. Diagnóstico de Médias Móveis (EMA 20, EMA 50 e Preço)
+  let maLabel = 'Neutro';
+  let maSentiment: 'bullish' | 'bearish' | 'neutral' | 'insufficient' = 'neutral';
+  let maValueDisplay = 'EMA: --';
+  let maRule = '';
+
+  if (latest.ema20 === undefined || latest.ema50 === undefined) {
+    maLabel = 'Dados Insuficientes';
+    maSentiment = 'insufficient';
+    maValueDisplay = latest.ema20 === undefined
+      ? `Aquecimento EMA20 (${candles.length}/20)`
+      : `Aquecimento EMA50 (${candles.length}/50)`;
+    maRule = 'As Médias Móveis Exponenciais exigem respectivamente 20 e 50 períodos para formação do primeiro valor.';
+  } else {
+    const p = latest.close;
+    const e20 = latest.ema20;
+    const e50 = latest.ema50;
+
+    if (p > e20 && e20 > e50) {
+      maLabel = 'Compra Forte';
+      maSentiment = 'bullish';
+      maValueDisplay = 'Preço > EMA20 > EMA50';
+      maRule = 'Alinhamento altista clássico: preço e média rápida (20) acima da média institucional longa (50).';
+    } else if (p < e20 && e20 < e50) {
+      maLabel = 'Venda Forte';
+      maSentiment = 'bearish';
+      maValueDisplay = 'Preço < EMA20 < EMA50';
+      maRule = 'Alinhamento baixista: preço e média rápida (20) abaixo da média institucional longa (50).';
+    } else if (e20 > e50 && p <= e20) {
+      maLabel = 'Correção em Alta';
+      maSentiment = 'neutral';
+      maValueDisplay = 'EMA20 > EMA50 (Preço em recuo)';
+      maRule = 'Tendência primária de alta mantida com teste de suporte na EMA 20.';
+    } else if (e20 < e50 && p >= e20) {
+      maLabel = 'Repique em Baixa';
+      maSentiment = 'neutral';
+      maValueDisplay = 'EMA20 < EMA50 (Preço em repique)';
+      maRule = 'Tendência primária de baixa com teste de resistência na EMA 20.';
+    } else {
+      maLabel = 'Cruzamento / Indefinido';
+      maSentiment = 'neutral';
+      maValueDisplay = 'EMAs em convergência';
+      maRule = 'Médias móveis próximas em consolidação lateral.';
+    }
+  }
+
+  // 3. Resumo dos Sinais (Contagem algorítmica real sobre os indicadores carregados)
+  let buyCount = 0;
+  let sellCount = 0;
+  let neutralCount = 0;
+
+  // Regra 1: RSI
+  if (latest.rsi !== undefined) {
+    if (latest.rsi <= 35) buyCount++;
+    else if (latest.rsi >= 65) sellCount++;
+    else neutralCount++;
+  }
+
+  // Regra 2: Posição do Preço em relação à EMA 20
+  if (latest.ema20 !== undefined) {
+    if (latest.close > latest.ema20) buyCount++;
+    else if (latest.close < latest.ema20) sellCount++;
+    else neutralCount++;
+  }
+
+  // Regra 3: Alinhamento EMA 20 vs EMA 50
+  if (latest.ema20 !== undefined && latest.ema50 !== undefined) {
+    if (latest.ema20 > latest.ema50) buyCount++;
+    else if (latest.ema20 < latest.ema50) sellCount++;
+    else neutralCount++;
+  }
+
+  // Regra 4: MACD Histograma
+  if (latest.macd !== undefined) {
+    if (latest.macd.histogram > 0) buyCount++;
+    else if (latest.macd.histogram < 0) sellCount++;
+    else neutralCount++;
+  }
+
+  const totalEvaluated = buyCount + sellCount + neutralCount;
+
+  if (totalEvaluated === 0) {
+    return {
+      oscillators: { label: oscLabel, sentiment: oscSentiment, valueDisplay: oscValueDisplay, ruleExplanation: oscRule },
+      movingAverages: { label: maLabel, sentiment: maSentiment, valueDisplay: maValueDisplay, ruleExplanation: maRule },
+      summary: {
+        buyCount: 0,
+        sellCount: 0,
+        neutralCount: 0,
+        totalEvaluated: 0,
+        verdict: 'Dados Insuficientes',
+        sentiment: 'insufficient',
+        ruleExplanation: 'Indicadores ainda em período de aquecimento para gerar resumo.'
+      }
+    };
+  }
+
+  let summaryVerdict = 'Indecisão';
+  let summarySentiment: 'bullish' | 'bearish' | 'neutral' | 'insufficient' = 'neutral';
+
+  if (buyCount > sellCount) {
+    summaryVerdict = buyCount >= 3 ? 'Forte Compra' : 'Viés Comprador';
+    summarySentiment = 'bullish';
+  } else if (sellCount > buyCount) {
+    summaryVerdict = sellCount >= 3 ? 'Forte Venda' : 'Viés Vendedor';
+    summarySentiment = 'bearish';
+  } else {
+    summaryVerdict = 'Consolidação / Neutro';
+    summarySentiment = 'neutral';
+  }
+
+  const summaryRule = `Consenso de ${totalEvaluated} regras auditadas (RSI, Preço/EMA20, Alinhamento de Médias e Histograma MACD) calculadas sobre os candles reais.`;
+
+  return {
+    oscillators: {
+      label: oscLabel,
+      sentiment: oscSentiment,
+      valueDisplay: oscValueDisplay,
+      ruleExplanation: oscRule
+    },
+    movingAverages: {
+      label: maLabel,
+      sentiment: maSentiment,
+      valueDisplay: maValueDisplay,
+      ruleExplanation: maRule
+    },
+    summary: {
+      buyCount,
+      sellCount,
+      neutralCount,
+      totalEvaluated,
+      verdict: summaryVerdict,
+      sentiment: summarySentiment,
+      ruleExplanation: summaryRule
+    }
+  };
+}

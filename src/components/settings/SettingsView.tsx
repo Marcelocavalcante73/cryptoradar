@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Sliders, Shield, Bell, Send, Database, Save, Check, Code2, AlertTriangle, Key, Volume2, CheckCircle2, XCircle, RefreshCw } from 'lucide-react';
 import { AppSettings, RiskSettings } from '../../types/crypto';
 import { soundService } from '../../services/soundService';
-import { sendTelegramTestMessage, TelegramSendResult } from '../../services/telegramService';
+import { sendTelegramTestMessage, getTelegramServerStatus, TelegramBackendStatus, TelegramSendResult } from '../../services/telegramService';
 import { apiService, ExchangeHealth } from '../../services/apiService';
 
 interface SettingsViewProps {
@@ -21,6 +21,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   // Estado de teste do Telegram
   const [telegramTesting, setTelegramTesting] = useState(false);
   const [telegramResult, setTelegramResult] = useState<TelegramSendResult | null>(null);
+  const [telegramServerStatus, setTelegramServerStatus] = useState<TelegramBackendStatus | null>(null);
 
   // Estado de teste da API de Exchanges
   const [exchangeChecking, setExchangeChecking] = useState(false);
@@ -28,6 +29,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   // Teste de som
   const [soundTested, setSoundTested] = useState(false);
+
+  useEffect(() => {
+    getTelegramServerStatus().then(setTelegramServerStatus).catch(() => null);
+  }, [activeTab]);
 
   const handleRiskChange = (field: keyof RiskSettings, value: any) => {
     setFormData((prev) => ({
@@ -40,7 +45,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   const handleTestSound = () => {
-    const ok = soundService.playSuccess();
+    soundService.playSuccess();
     setSoundTested(true);
     setTimeout(() => setSoundTested(false), 2000);
   };
@@ -49,14 +54,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setTelegramTesting(true);
     setTelegramResult(null);
     try {
-      const res = await sendTelegramTestMessage(
-        formData.telegram.botTokenPlaceholder,
-        formData.telegram.chatIdPlaceholder
-      );
+      const res = await sendTelegramTestMessage(formData.telegram.chatIdPlaceholder);
       setTelegramResult(res);
+      getTelegramServerStatus().then(setTelegramServerStatus).catch(() => null);
     } catch (e: any) {
       setTelegramResult({
         success: false,
+        configured: false,
         message: 'Erro inesperado ao disparar teste do Telegram: ' + (e?.message || 'falha de rede')
       });
     } finally {
@@ -374,17 +378,47 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       )}
 
-      {/* 3. Telegram Bot de Notificações - Validação Real */}
+      {/* 3. Telegram Bot de Notificações - Integração Segura via Backend */}
       {activeTab === 'telegram' && (
         <div className="bg-[#121722] border border-slate-800 rounded-2xl p-4 space-y-4">
           <div>
-            <h3 className="text-sm font-bold text-white flex items-center gap-2">
-              <Send className="w-4 h-4 text-cyan-400" />
-              Notificações no Telegram
-            </h3>
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Send className="w-4 h-4 text-cyan-400" />
+                Notificações no Telegram (Integração Segura)
+              </h3>
+              <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
+                telegramServerStatus?.configured
+                  ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                  : 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+              }`}>
+                {telegramServerStatus?.configured ? 'Servidor Pronto' : 'Backend Pendente (.env)'}
+              </span>
+            </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Envio real de alertas de sinais e ordens para o seu bot e chat ID.
+              Envio seguro de alertas via backend. O token do bot fica protegido no servidor e nunca é exposto no navegador.
             </p>
+          </div>
+
+          {/* Banner de Status do Backend */}
+          <div className={`p-3 rounded-xl border text-xs flex items-start gap-2 ${
+            telegramServerStatus?.configured
+              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+              : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+          }`}>
+            <Shield className="w-4 h-4 shrink-0 mt-0.5 text-cyan-400" />
+            <div>
+              <span className="font-semibold block">
+                {telegramServerStatus?.configured
+                  ? 'Segurança de Credenciais Ativa'
+                  : 'Configuração do Servidor Pendente'}
+              </span>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                {telegramServerStatus?.configured
+                  ? 'A variável TELEGRAM_BOT_TOKEN está configurada no backend. Disparos reais autorizados.'
+                  : 'Para ativar o envio real, defina a variável TELEGRAM_BOT_TOKEN no arquivo .env do servidor. Nenhum token transita pelo frontend por razões de segurança.'}
+              </p>
+            </div>
           </div>
 
           <div className="space-y-3 text-xs">
@@ -405,24 +439,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
             <div>
               <label className="text-[10px] text-slate-400 block mb-1">
-                Telegram Bot Token (gerado pelo @BotFather)
+                Destino: Chat ID ou Canal (@canal)
               </label>
-              <input
-                type="password"
-                value={formData.telegram.botTokenPlaceholder}
-                onChange={(e) =>
-                  setFormData((prev) => ({
-                    ...prev,
-                    telegram: { ...prev.telegram, botTokenPlaceholder: e.target.value }
-                  }))
-                }
-                placeholder="Ex: 712345678:AAH..."
-                className="w-full bg-[#161D2B] border border-slate-700/80 rounded-xl px-3 py-2 font-mono text-slate-300 focus:outline-none focus:border-cyan-400"
-              />
-            </div>
-
-            <div>
-              <label className="text-[10px] text-slate-400 block mb-1">Chat ID ou Canal (@canal)</label>
               <input
                 type="text"
                 value={formData.telegram.chatIdPlaceholder}
@@ -432,9 +450,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     telegram: { ...prev.telegram, chatIdPlaceholder: e.target.value }
                   }))
                 }
-                placeholder="Ex: 123456789 ou @meucanal"
+                placeholder="Ex: @meucanal ou 123456789"
                 className="w-full bg-[#161D2B] border border-slate-700/80 rounded-xl px-3 py-2 font-mono text-slate-300 focus:outline-none focus:border-cyan-400"
               />
+              <span className="text-[10px] text-slate-500 block mt-1">
+                Para canais públicos use @nome_do_canal. Para conversas privadas, envie /start para o bot e insira o seu ID numérico.
+              </span>
             </div>
 
             {/* Resultado do Teste de Envio */}
@@ -464,10 +485,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               type="button"
               disabled={telegramTesting}
               onClick={handleTestTelegram}
-              className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 border border-slate-800 rounded-xl text-slate-200 hover:text-white transition font-semibold text-xs flex items-center justify-center gap-2"
+              className="w-full bg-slate-800 hover:bg-slate-700 active:scale-[0.99] text-cyan-300 font-semibold py-2.5 px-3 rounded-xl border border-slate-700 flex items-center justify-center gap-2 transition disabled:opacity-50"
             >
-              <Send className={`w-3.5 h-3.5 text-cyan-400 ${telegramTesting ? 'animate-pulse' : ''}`} />
-              <span>{telegramTesting ? 'Testando Conexão...' : 'Testar Envio Real via Telegram API'}</span>
+              {telegramTesting ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin text-cyan-400" />
+                  <span>Enviando pelo Backend...</span>
+                </>
+              ) : (
+                <>
+                  <Send className="w-4 h-4 text-cyan-400" />
+                  <span>Testar Envio via Backend</span>
+                </>
+              )}
             </button>
           </div>
         </div>

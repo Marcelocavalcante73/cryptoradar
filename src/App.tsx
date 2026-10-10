@@ -188,10 +188,16 @@ export default function App() {
     });
   };
 
-  // Resetar saldo de demonstração
+  // Resetar saldo para conta limpa
   const handleResetPaperAccount = () => {
     const fresh = StorageService.resetPaperAccount(10000);
     setPaperAccount(fresh);
+  };
+
+  // Carregar conta de demonstração com dados de exemplo
+  const handleLoadDemoPaperAccount = () => {
+    const demo = StorageService.loadDemoAccount();
+    setPaperAccount(demo);
   };
 
   // Título da tela ativa para o cabeçalho
@@ -284,6 +290,7 @@ export default function App() {
               onClosePosition={handleClosePosition}
               onCancelPendingOrder={handleCancelPendingOrder}
               onResetAccount={handleResetPaperAccount}
+              onLoadDemoAccount={handleLoadDemoPaperAccount}
               onSelectCoinBySymbol={handleSelectCoinBySymbol}
             />
           )}
