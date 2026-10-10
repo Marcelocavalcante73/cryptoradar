@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
+    "backtest": "tsx scripts/backtest.ts",
     "test": "tsx src/tests/crypto-radar.test.ts"
   },
   "dependencies": {

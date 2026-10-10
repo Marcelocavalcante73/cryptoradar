@@ -4,6 +4,8 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getScanState, runScan, startScanner } from './server/scanner';
+import { fetchHistory } from './server/history';
+import { runBacktest } from './src/services/backtest';
 
 dotenv.config();
 
@@ -156,6 +158,28 @@ app.post('/api/scan', (req: Request, res: Response) => {
   if (isRateLimited(ip)) return res.status(429).json({ error: 'Limite de requisições excedido.' });
   runScan();
   res.status(202).json({ started: true });
+});
+
+/**
+ * GET /api/backtest?symbol=BTCUSDT&tf=1h&bars=2000 — backtest do motor de sinais no histórico real.
+ */
+app.get('/api/backtest', async (req: Request, res: Response) => {
+  const ip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1';
+  if (isRateLimited(ip)) return res.status(429).json({ error: 'Limite de requisições excedido.' });
+
+  const symbol = String(req.query.symbol || '').toUpperCase();
+  const tf = String(req.query.tf || '1h');
+  const bars = Math.min(5000, Math.max(200, Number(req.query.bars) || 2000));
+  if (!/^[A-Z0-9]{3,15}USDT$/.test(symbol)) return res.status(400).json({ error: 'symbol inválido (ex: BTCUSDT).' });
+  if (!['15m', '1h', '4h', '1d'].includes(tf)) return res.status(400).json({ error: 'tf inválido (15m, 1h, 4h, 1d).' });
+
+  try {
+    const candles = await fetchHistory(symbol, tf, bars);
+    const result = runBacktest(candles, symbol, symbol.replace(/USDT$/, ''), tf);
+    res.json({ ...result, trades: result.trades.slice(-100) });
+  } catch (e: any) {
+    res.status(502).json({ error: `Falha ao obter histórico da Binance: ${e?.message ?? 'indisponível'}` });
+  }
 });
 
 /**
