@@ -22,6 +22,8 @@ interface SignalsViewProps {
   onSelectCoinBySymbol: (symbol: string) => void;
 }
 
+const PERIOD_MS = { '24h': 24 * 3600e3, '7d': 7 * 24 * 3600e3, '30d': 30 * 24 * 3600e3 } as const;
+
 export const SignalsView: React.FC<SignalsViewProps> = ({
   scanInfo,
   signals,
@@ -52,13 +54,17 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
   ];
 
   const filteredSignals = useMemo(() => {
+    const now = Date.now();
     return signals.filter((s) => {
       const matchCoin = selectedCoin === 'ALL' || s.baseAsset === selectedCoin;
       const matchStrategy = selectedStrategy === 'ALL' || s.strategy === selectedStrategy;
       const matchStatus = selectedStatus === 'ALL' || s.status === selectedStatus;
-      return matchCoin && matchStrategy && matchStatus;
+      // Sinais reais têm createdAt; sinais de demonstração não têm data e ficam sempre visíveis.
+      const createdAt = (s as TechnicalSignal & { createdAt?: number }).createdAt;
+      const matchPeriod = createdAt === undefined || now - createdAt <= PERIOD_MS[selectedPeriod];
+      return matchCoin && matchStrategy && matchStatus && matchPeriod;
     });
-  }, [signals, selectedCoin, selectedStrategy, selectedStatus]);
+  }, [signals, selectedCoin, selectedStrategy, selectedStatus, selectedPeriod]);
 
   const getStatusBadge = (status: SignalStatus) => {
     switch (status) {
@@ -85,13 +91,20 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
             <span className="text-emerald-400 font-semibold">Scanner ativo</span> — {scanInfo.universeCount} moedas do top 100
             ({scanInfo.universeSource === 'COINMARKETCAP' ? 'CoinMarketCap' : 'CoinGecko'}), {scanInfo.scannedPairs} análises na última varredura
             ({new Date(scanInfo.lastScanAt).toLocaleTimeString('pt-BR')}).
-            {scanInfo.skipped.length > 0 && ` Sem par USDT na Binance: ${scanInfo.skipped.join(', ')}.`}
           </span>
         ) : (
           <span>
             <span className="text-amber-300 font-semibold">Modo demonstração</span> — exibindo sinais de exemplo.{' '}
             {scanInfo?.running ? 'Primeira varredura em andamento…' : scanInfo?.lastError ?? 'Servidor/scanner indisponível.'}
           </span>
+        )}
+        {scanInfo && !scanInfo.lastError && scanInfo.skipped.length > 0 && (
+          <details className="mt-1.5">
+            <summary className="cursor-pointer text-slate-500">
+              {scanInfo.skipped.length} do top 100 sem par USDT na Binance (ignoradas)
+            </summary>
+            <p className="mt-1 text-[10px] text-slate-500 leading-relaxed">{scanInfo.skipped.join(', ')}</p>
+          </details>
         )}
       </div>
 
