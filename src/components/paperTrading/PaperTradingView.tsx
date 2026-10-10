@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Wallet, Plus, RotateCcw, ArrowUpRight, ArrowDownRight, CheckCircle2, XCircle, TrendingUp } from 'lucide-react';
+import { Wallet, Plus, RotateCcw, ArrowUpRight, ArrowDownRight, CheckCircle2, XCircle, TrendingUp, Clock, Ban } from 'lucide-react';
 import { PaperAccount, PaperPosition, CryptoAsset } from '../../types/crypto';
 import { Badge } from '../common/Badge';
 
@@ -8,6 +8,7 @@ interface PaperTradingViewProps {
   assets: CryptoAsset[];
   onOpenNewTradeModal: () => void;
   onClosePosition: (positionId: string) => void;
+  onCancelPendingOrder: (positionId: string) => void;
   onResetAccount: () => void;
   onSelectCoinBySymbol: (symbol: string) => void;
 }
@@ -17,18 +18,23 @@ export const PaperTradingView: React.FC<PaperTradingViewProps> = ({
   assets,
   onOpenNewTradeModal,
   onClosePosition,
+  onCancelPendingOrder,
   onResetAccount,
   onSelectCoinBySymbol
 }) => {
-  const [activeTab, setActiveTab] = useState<'positions' | 'history'>('positions');
+  const [activeTab, setActiveTab] = useState<'positions' | 'pending' | 'history'>('positions');
 
   // Mapa de preços atuais atualizados
   const priceMap = new Map<string, number>();
   assets.forEach((a) => priceMap.set(a.symbol, a.price));
 
-  // Cálculo de PnL não realizado em tempo real para as posições abertas considerando taxas
+  // Separa posições abertas ativas de ordens limites pendentes
+  const openPositions = account.positions.filter((p) => p.status === 'OPEN');
+  const pendingOrders = account.positions.filter((p) => p.status === 'PENDING');
+
+  // Cálculo de PnL não realizado EXCLUSIVAMENTE para ordens já abertas e preenchidas
   let totalUnrealizedPnl = 0;
-  const enrichedPositions = account.positions.map((pos) => {
+  const enrichedOpenPositions = openPositions.map((pos) => {
     const livePrice = priceMap.get(pos.symbol) || pos.currentPrice;
     const priceDiff = pos.direction === 'LONG' ? livePrice - pos.entryPrice : pos.entryPrice - livePrice;
     const percentDiff = (priceDiff / pos.entryPrice) * pos.leverage;
@@ -52,9 +58,6 @@ export const PaperTradingView: React.FC<PaperTradingViewProps> = ({
 
   const totalEquity = account.virtualBalance + totalUnrealizedPnl;
   const initialBalance = account.initialBalance || 10000;
-  const totalPnlPercent = ((totalEquity - initialBalance) / initialBalance) * 100;
-  const isPositiveEquity = totalEquity >= initialBalance;
-
   const totalClosed = account.closedHistory.length;
   const winCount = account.closedHistory.filter((p) => (p.realizedPnl || 0) > 0).length;
   const winRate = totalClosed > 0 ? ((winCount / totalClosed) * 100).toFixed(0) : '0';
@@ -139,49 +142,63 @@ export const PaperTradingView: React.FC<PaperTradingViewProps> = ({
         </div>
       </div>
 
-      {/* Abas: Posições Abertas vs Histórico */}
+      {/* Abas: Posições Abertas vs Ordens Limite Pendentes vs Histórico */}
       <div className="flex items-center gap-1 bg-[#121722] border border-slate-800 rounded-2xl p-1">
         <button
           onClick={() => setActiveTab('positions')}
-          className={`flex-1 py-2 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-1.5 ${
+          className={`flex-1 py-2 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-1 ${
             activeTab === 'positions'
               ? 'bg-slate-800 text-white shadow-sm'
               : 'text-slate-400 hover:text-slate-200'
           }`}
         >
-          <span>Posições Abertas</span>
+          <span>Abertas</span>
           <span className="text-[10px] bg-slate-900 px-1.5 py-0.5 rounded-full font-mono text-emerald-400">
-            {enrichedPositions.length}
+            {enrichedOpenPositions.length}
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('pending')}
+          className={`flex-1 py-2 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-1 ${
+            activeTab === 'pending'
+              ? 'bg-slate-800 text-white shadow-sm'
+              : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <span>Pendentes</span>
+          <span className="text-[10px] bg-slate-900 px-1.5 py-0.5 rounded-full font-mono text-cyan-400">
+            {pendingOrders.length}
           </span>
         </button>
 
         <button
           onClick={() => setActiveTab('history')}
-          className={`flex-1 py-2 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-1.5 ${
+          className={`flex-1 py-2 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-1 ${
             activeTab === 'history'
               ? 'bg-slate-800 text-white shadow-sm'
               : 'text-slate-400 hover:text-slate-200'
           }`}
         >
-          <span>Histórico de Ordens</span>
+          <span>Histórico</span>
           <span className="text-[10px] bg-slate-900 px-1.5 py-0.5 rounded-full font-mono text-slate-400">
             {account.closedHistory.length}
           </span>
         </button>
       </div>
 
-      {/* Conteúdo da Aba Selecionada */}
-      {activeTab === 'positions' ? (
+      {/* 1. Aba: Posições Abertas (Preenchidas e ativas) */}
+      {activeTab === 'positions' && (
         <div className="space-y-2.5">
-          {enrichedPositions.length === 0 ? (
+          {enrichedOpenPositions.length === 0 ? (
             <div className="bg-[#121722] border border-slate-800 rounded-2xl p-8 text-center space-y-3">
               <div className="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-800 mx-auto flex items-center justify-center text-slate-500">
                 <TrendingUp className="w-6 h-6" />
               </div>
               <div>
-                <h4 className="text-sm font-bold text-white">Nenhuma posição aberta</h4>
+                <h4 className="text-sm font-bold text-white">Nenhuma posição aberta no momento</h4>
                 <p className="text-xs text-slate-400 mt-1 max-w-xs mx-auto">
-                  Abra uma ordem de teste para acompanhar lucros e perdas em tempo real sem arriscar seu capital.
+                  Execute uma ordem a mercado ou aguarde a execução de suas ordens a limite pendentes.
                 </p>
               </div>
               <button
@@ -189,11 +206,11 @@ export const PaperTradingView: React.FC<PaperTradingViewProps> = ({
                 className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs inline-flex items-center gap-1.5 shadow-md shadow-emerald-500/20"
               >
                 <Plus className="w-4 h-4" />
-                Criar Primeira Posição Demo
+                Criar Nova Operação Demo
               </button>
             </div>
           ) : (
-            enrichedPositions.map((pos) => {
+            enrichedOpenPositions.map((pos) => {
               const isProfit = (pos.unrealizedPnl || 0) >= 0;
               const isLong = pos.direction === 'LONG';
 
@@ -219,9 +236,12 @@ export const PaperTradingView: React.FC<PaperTradingViewProps> = ({
                       >
                         {pos.symbol}
                       </button>
+                      <span className="text-[10px] bg-slate-900 text-slate-400 border border-slate-800 px-1.5 py-0.5 rounded font-mono">
+                        {pos.orderType}
+                      </span>
                     </div>
 
-                    {/* PnL Não Realizado */}
+                    {/* PnL Líquido Não Realizado */}
                     <div className="text-right">
                       <span
                         className={`text-sm font-bold font-mono ${
@@ -243,15 +263,15 @@ export const PaperTradingView: React.FC<PaperTradingViewProps> = ({
                   {/* Detalhes da Posição */}
                   <div className="grid grid-cols-3 gap-1 pt-2 border-t border-slate-800/80 text-[11px] font-mono">
                     <div>
-                      <span className="text-[9px] text-slate-500 block">Entrada</span>
+                      <span className="text-[9px] text-slate-500 block">Preço Entrada</span>
                       <span className="text-slate-300">${pos.entryPrice.toLocaleString()}</span>
                     </div>
                     <div>
-                      <span className="text-[9px] text-slate-500 block">Atual</span>
+                      <span className="text-[9px] text-slate-500 block">Preço Atual</span>
                       <span className="text-white">${pos.currentPrice.toLocaleString()}</span>
                     </div>
                     <div>
-                      <span className="text-[9px] text-slate-500 block">Margem</span>
+                      <span className="text-[9px] text-slate-500 block">Margem Investida</span>
                       <span className="text-slate-300">${pos.investedUSDT.toFixed(0)}</span>
                     </div>
                   </div>
@@ -288,7 +308,108 @@ export const PaperTradingView: React.FC<PaperTradingViewProps> = ({
             })
           )}
         </div>
-      ) : (
+      )}
+
+      {/* 2. Aba: Ordens Limite Pendentes (Aguardando preço atingir limite) */}
+      {activeTab === 'pending' && (
+        <div className="space-y-2.5">
+          {pendingOrders.length === 0 ? (
+            <div className="bg-[#121722] border border-slate-800 rounded-2xl p-8 text-center space-y-3">
+              <div className="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-800 mx-auto flex items-center justify-center text-slate-500">
+                <Clock className="w-6 h-6 text-cyan-400" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-white">Nenhuma ordem limite pendente</h4>
+                <p className="text-xs text-slate-400 mt-1 max-w-xs mx-auto">
+                  Ordens a limite só são abertas quando a cotação de mercado atinge exatamente o valor estipulado.
+                </p>
+              </div>
+            </div>
+          ) : (
+            pendingOrders.map((pos) => {
+              const livePrice = priceMap.get(pos.symbol) || pos.currentPrice;
+              const targetLimit = pos.limitPrice || pos.entryPrice;
+              const isLong = pos.direction === 'LONG';
+              const distPercent = Math.abs(((livePrice - targetLimit) / livePrice) * 100);
+
+              return (
+                <div
+                  key={pos.id}
+                  className="bg-[#121722] border border-cyan-500/30 rounded-2xl p-3.5 space-y-2.5 transition"
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`text-xs font-bold px-2 py-0.5 rounded-lg ${
+                          isLong
+                            ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                            : 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
+                        }`}
+                      >
+                        LIMIT {isLong ? 'LONG' : 'SHORT'} {pos.leverage}x
+                      </span>
+                      <button
+                        onClick={() => onSelectCoinBySymbol(pos.symbol)}
+                        className="text-sm font-bold text-white hover:text-emerald-400 transition"
+                      >
+                        {pos.symbol}
+                      </button>
+                    </div>
+
+                    <span className="text-[11px] font-mono text-cyan-400 bg-cyan-500/10 px-2 py-0.5 rounded-md border border-cyan-500/30 flex items-center gap-1">
+                      <Clock className="w-3 h-3" /> AGUARDANDO GATILHO
+                    </span>
+                  </div>
+
+                  {/* Informações da Ordem Limite */}
+                  <div className="grid grid-cols-3 gap-1 pt-2 border-t border-slate-800/80 text-[11px] font-mono">
+                    <div>
+                      <span className="text-[9px] text-slate-500 block">Preço Limite</span>
+                      <span className="text-cyan-300 font-bold">${targetLimit.toLocaleString()}</span>
+                    </div>
+                    <div>
+                      <span className="text-[9px] text-slate-500 block">Preço Atual</span>
+                      <span className="text-white">${livePrice.toLocaleString()}</span>
+                    </div>
+                    <div>
+                      <span className="text-[9px] text-slate-500 block">Distância</span>
+                      <span className="text-amber-400">{distPercent.toFixed(2)}% restante</span>
+                    </div>
+                  </div>
+
+                  {/* Condição de Disparo */}
+                  <div className="bg-slate-900/90 rounded-xl p-2 text-[10px] text-slate-400 flex items-center justify-between border border-slate-800">
+                    <span>
+                      Gatilho: Executará quando o preço{' '}
+                      <strong className="text-slate-200">
+                        {isLong ? `<= $${targetLimit.toLocaleString()}` : `>= $${targetLimit.toLocaleString()}`}
+                      </strong>
+                    </span>
+                    <span className="text-slate-500 font-mono">Margem Reservada: ${pos.investedUSDT.toFixed(0)}</span>
+                  </div>
+
+                  {/* Ação: Cancelar Ordem Limite */}
+                  <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between">
+                    <span className="text-[10px] text-slate-500 font-mono">
+                      Taxa reservada: ${(pos.openFee || 0).toFixed(2)}
+                    </span>
+                    <button
+                      onClick={() => onCancelPendingOrder(pos.id)}
+                      className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-amber-400 hover:text-amber-300 border border-amber-500/30 text-xs font-semibold flex items-center gap-1 transition"
+                    >
+                      <Ban className="w-3.5 h-3.5" />
+                      Cancelar Ordem Limite
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {/* 3. Aba: Histórico de Ordens Fechadas e Canceladas */}
+      {activeTab === 'history' && (
         <div className="space-y-2">
           {account.closedHistory.length === 0 ? (
             <div className="bg-[#121722] border border-slate-800 rounded-2xl p-8 text-center text-slate-400 text-xs">
@@ -296,7 +417,8 @@ export const PaperTradingView: React.FC<PaperTradingViewProps> = ({
             </div>
           ) : (
             account.closedHistory.map((closed) => {
-              const isProfit = (closed.realizedPnl || 0) >= 0;
+              const isProfit = (closed.realizedPnl || 0) > 0;
+              const isCancelled = closed.closeReason === 'CANCELLED';
 
               return (
                 <div
@@ -306,12 +428,16 @@ export const PaperTradingView: React.FC<PaperTradingViewProps> = ({
                   <div className="flex items-center gap-2.5">
                     <div
                       className={`w-7 h-7 rounded-xl flex items-center justify-center ${
-                        isProfit
+                        isCancelled
+                          ? 'bg-slate-800 text-slate-400 border border-slate-700'
+                          : isProfit
                           ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
                           : 'bg-rose-500/15 text-rose-400 border border-rose-500/30'
                       }`}
                     >
-                      {isProfit ? (
+                      {isCancelled ? (
+                        <Ban className="w-4 h-4" />
+                      ) : isProfit ? (
                         <CheckCircle2 className="w-4 h-4" />
                       ) : (
                         <XCircle className="w-4 h-4" />
@@ -331,33 +457,41 @@ export const PaperTradingView: React.FC<PaperTradingViewProps> = ({
                             STOP LOSS
                           </span>
                         )}
-                        {closed.closeReason === 'LIQUIDATION' && (
-                          <span className="text-[9px] bg-rose-500 text-white font-bold px-1.5 py-0.2 rounded">
-                            LIQUIDAÇÃO
+                        {closed.closeReason === 'CANCELLED' && (
+                          <span className="text-[9px] bg-slate-800 text-slate-300 border border-slate-700 px-1.5 py-0.2 rounded font-semibold">
+                            ORDEM CANCELADA
                           </span>
                         )}
                       </div>
                       <span className="text-[10px] text-slate-500 font-mono block mt-0.5">
-                        Entrada: ${closed.entryPrice.toLocaleString()} • Saída: ${closed.closePrice?.toLocaleString()} • Taxas: ${(closed.totalFees || ((closed.openFee || 0) + (closed.closeFee || 0))).toFixed(2)}
+                        {isCancelled
+                          ? `Limite: $${closed.entryPrice.toLocaleString()} • Margem devolvida integralmente`
+                          : `Entrada: $${closed.entryPrice.toLocaleString()} • Saída: $${closed.closePrice?.toLocaleString()} • Taxas: $${(closed.totalFees || 0).toFixed(2)}`}
                       </span>
                     </div>
                   </div>
 
                   <div className="text-right">
-                    <span
-                      className={`text-xs font-bold font-mono ${
-                        isProfit ? 'text-emerald-400' : 'text-rose-400'
-                      }`}
-                    >
-                      {isProfit ? '+' : ''}${closed.realizedPnl?.toFixed(2)}
-                    </span>
-                    <span
-                      className={`text-[10px] block font-mono ${
-                        isProfit ? 'text-emerald-400' : 'text-rose-400'
-                      }`}
-                    >
-                      ({isProfit ? '+' : ''}{closed.realizedPnlPercent?.toFixed(2)}%)
-                    </span>
+                    {isCancelled ? (
+                      <span className="text-xs font-mono text-slate-400 font-semibold">$0.00</span>
+                    ) : (
+                      <>
+                        <span
+                          className={`text-xs font-bold font-mono ${
+                            isProfit ? 'text-emerald-400' : 'text-rose-400'
+                          }`}
+                        >
+                          {isProfit ? '+' : ''}${closed.realizedPnl?.toFixed(2)}
+                        </span>
+                        <span
+                          className={`text-[10px] block font-mono ${
+                            isProfit ? 'text-emerald-400' : 'text-rose-400'
+                          }`}
+                        >
+                          ({isProfit ? '+' : ''}{closed.realizedPnlPercent?.toFixed(2)}%)
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
               );

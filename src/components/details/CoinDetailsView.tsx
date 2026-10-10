@@ -55,11 +55,19 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({
         </button>
 
         <div className="flex items-center gap-1.5">
-          <Badge variant="demo" size="sm">DEMO TÉCNICO</Badge>
-          <span className="text-[10px] text-slate-500 font-mono">
-            {asset.exchanges.join(' / ').toUpperCase()}
+          <Badge variant="demo" size="sm">VELAS SINTÉTICAS (DEMO)</Badge>
+          <span className="text-[10px] text-slate-400 font-mono">
+            {asset.isDemoData ? 'Modo DEMO' : 'Ref: Binance API'}
           </span>
         </div>
+      </div>
+
+      {/* Alerta de dados sintéticos */}
+      <div className="px-3 py-1.5 bg-slate-900/80 border border-slate-800 rounded-xl text-[11px] text-slate-400 flex items-center justify-between">
+        <span>
+          <strong className="text-amber-300">Aviso:</strong> O gráfico utiliza velas sintéticas para demonstração visual. Não utilize candles sintéticos para backtests.
+        </span>
+        <span className="text-[10px] bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded font-mono shrink-0 ml-2">DEMO</span>
       </div>
 
       {/* Cabeçalho do Ativo */}

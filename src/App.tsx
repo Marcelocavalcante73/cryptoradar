@@ -3,7 +3,7 @@
  * Versão 1.0 (DEMO)
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { CryptoAsset, TechnicalSignal, PaperAccount, AppSettings, PaperPosition } from './types/crypto';
 import { INITIAL_ASSETS, INITIAL_SIGNALS } from './services/mockData';
 import { StorageService } from './services/storageService';
@@ -42,13 +42,16 @@ export default function App() {
   const [isLive, setIsLive] = useState(false);
   const [isMobileFrame, setIsMobileFrame] = useState(false);
 
+  // Prevenção estrita de requisições concorrentes
+  const isUpdatingRef = useRef(false);
+
   // Salva conta de paper trading no localStorage quando alterada
   const updatePaperAccount = useCallback((newAccount: PaperAccount) => {
     setPaperAccount(newAccount);
     StorageService.savePaperAccount(newAccount);
   }, []);
 
-  // Verificação e execução automática de Stop-Loss e Take-Profit com base nos preços atualizados
+  // Verificação e execução de ordens LIMIT pendentes, Stop-Loss e Take-Profit
   const checkTriggers = useCallback((currentAssets: CryptoAsset[], currentAcc: PaperAccount): PaperAccount => {
     if (!currentAcc.positions || currentAcc.positions.length === 0) return currentAcc;
 
@@ -57,6 +60,7 @@ export default function App() {
 
     let updatedBalance = currentAcc.virtualBalance;
     let totalFees = currentAcc.totalFeesPaid || 0;
+    let totalTradesCount = currentAcc.totalTrades || 0;
     let wins = currentAcc.winTrades;
     let losses = currentAcc.lossTrades;
     const remainingPositions: PaperPosition[] = [];
@@ -70,6 +74,43 @@ export default function App() {
         continue;
       }
 
+      // 1. Tratamento de ordens LIMIT PENDENTES
+      // Uma ordem LIMIT simulada NÃO abre antes de o preço atingir o seu limite!
+      if (pos.status === 'PENDING') {
+        const targetLimit = pos.limitPrice || pos.entryPrice;
+        let limitTriggered = false;
+
+        if (pos.direction === 'LONG') {
+          // Compra LIMIT: só abre quando o preço de mercado cai para o limite ou abaixo dele
+          if (livePrice <= targetLimit) {
+            limitTriggered = true;
+          }
+        } else {
+          // Venda LIMIT: só abre quando o preço de mercado sobe para o limite ou acima dele
+          if (livePrice >= targetLimit) {
+            limitTriggered = true;
+          }
+        }
+
+        if (limitTriggered) {
+          changed = true;
+          totalTradesCount++;
+          // Ordem atingiu o patamar estipulado e agora é uma posição ABERTA
+          remainingPositions.push({
+            ...pos,
+            status: 'OPEN',
+            entryPrice: targetLimit,
+            currentPrice: livePrice,
+            triggeredTimestamp: Date.now()
+          });
+        } else {
+          // Permanece pendente sem gerar PnL nem acionar TP/SL
+          remainingPositions.push({ ...pos, currentPrice: livePrice });
+        }
+        continue;
+      }
+
+      // 2. Tratamento de posições já ABERTAS (status === 'OPEN') para TP e SL
       let triggered = false;
       let reason: 'TAKE_PROFIT' | 'STOP_LOSS' | null = null;
       let exitPrice = livePrice;
@@ -107,7 +148,7 @@ export default function App() {
         const netRealizedPnl = grossPnl - (pos.openFee || 0) - closeFee;
         totalFees += closeFee;
 
-        // Retorna margem investida + PnL bruto - taxa de saída (margem isolada)
+        // Retorna margem investida + PnL bruto - taxa de saída (margem isolada com teto de perda)
         const returnedCash = Math.max(0, pos.investedUSDT + grossPnl - closeFee);
         updatedBalance += returnedCash;
 
@@ -135,6 +176,7 @@ export default function App() {
     return {
       ...currentAcc,
       virtualBalance: Number(updatedBalance.toFixed(2)),
+      totalTrades: totalTradesCount,
       totalFeesPaid: Number(totalFees.toFixed(2)),
       winTrades: wins,
       lossTrades: losses,
@@ -143,8 +185,10 @@ export default function App() {
     };
   }, []);
 
-  // Consulta cotações da API pública (Binance ou snapshot)
+  // Consulta cotações da API pública (Binance ou snapshot) sem concorrência
   const refreshPrices = useCallback(async () => {
+    if (isUpdatingRef.current) return;
+    isUpdatingRef.current = true;
     setIsFetching(true);
     try {
       const data = await apiService.fetchTickers();
@@ -155,7 +199,7 @@ export default function App() {
       // Mantém a moeda selecionada sincronizada com o preço novo
       setSelectedCoin((prev) => data.find((a) => a.symbol === prev.symbol) || prev);
 
-      // Avalia Stop-Loss e Take-Profit das posições simuladas
+      // Avalia gatilhos de ordens LIMIT pendentes, Stop-Loss e Take-Profit
       setPaperAccount((prevAcc) => {
         const evaluated = checkTriggers(data, prevAcc);
         if (evaluated !== prevAcc) {
@@ -167,12 +211,25 @@ export default function App() {
       console.warn('Erro ao atualizar preços:', err);
     } finally {
       setIsFetching(false);
+      isUpdatingRef.current = false;
     }
   }, [checkTriggers]);
 
+  // Atualização periódica configurada nas configurações com limpeza de temporizador e prevenção de concorrência
   useEffect(() => {
-    refreshPrices();
-  }, [refreshPrices]);
+    refreshPrices(); // Primeira carga
+
+    const intervalSeconds = Math.max(5, settings.refreshIntervalSeconds || 30);
+    const timerId = setInterval(() => {
+      if (!isUpdatingRef.current) {
+        refreshPrices();
+      }
+    }, intervalSeconds * 1000);
+
+    return () => {
+      clearInterval(timerId); // Limpa temporizador ao desmontar
+    };
+  }, [refreshPrices, settings.refreshIntervalSeconds]);
 
   // Salva configurações
   const handleSaveSettings = (newSettings: AppSettings) => {
@@ -198,15 +255,16 @@ export default function App() {
     setTradeModalOpen(true);
   };
 
-  // Execução de ordem simulada (Paper Trading) com débito de margem + taxa
+  // Execução de ordem simulada (Paper Trading) com suporte a MARKET e LIMIT
   const handleConfirmTrade = (
-    tradeData: Omit<PaperPosition, 'id' | 'openTimestamp' | 'status' | 'isDemo'>
+    tradeData: Omit<PaperPosition, 'id' | 'openTimestamp' | 'isDemo'>
   ) => {
+    const isLimit = tradeData.orderType === 'LIMIT';
     const newPos: PaperPosition = {
       ...tradeData,
       id: `pos-${Date.now()}`,
       openTimestamp: Date.now(),
-      status: 'OPEN',
+      status: isLimit ? 'PENDING' : 'OPEN',
       isDemo: true
     };
 
@@ -217,7 +275,7 @@ export default function App() {
     const updated: PaperAccount = {
       ...paperAccount,
       virtualBalance: Number(newBalance.toFixed(2)),
-      totalTrades: paperAccount.totalTrades + 1,
+      totalTrades: isLimit ? paperAccount.totalTrades : paperAccount.totalTrades + 1,
       totalFeesPaid: Number(((paperAccount.totalFeesPaid || 0) + fee).toFixed(2)),
       positions: [newPos, ...paperAccount.positions]
     };
@@ -225,10 +283,39 @@ export default function App() {
     updatePaperAccount(updated);
   };
 
-  // Encerramento manual de posição simulada
+  // Cancelamento de ordem LIMIT pendente com devolução integral do saldo reservado
+  const handleCancelPendingOrder = (positionId: string) => {
+    const pos = paperAccount.positions.find((p) => p.id === positionId);
+    if (!pos || pos.status !== 'PENDING') return;
+
+    const refundAmount = pos.investedUSDT + (pos.openFee || 0);
+    const newBalance = paperAccount.virtualBalance + refundAmount;
+
+    const cancelledPos: PaperPosition = {
+      ...pos,
+      status: 'CLOSED',
+      closedTimestamp: Date.now(),
+      closePrice: pos.entryPrice,
+      realizedPnl: 0,
+      realizedPnlPercent: 0,
+      closeReason: 'CANCELLED'
+    };
+
+    const updated: PaperAccount = {
+      ...paperAccount,
+      virtualBalance: Number(newBalance.toFixed(2)),
+      totalFeesPaid: Math.max(0, Number(((paperAccount.totalFeesPaid || 0) - (pos.openFee || 0)).toFixed(2))),
+      positions: paperAccount.positions.filter((p) => p.id !== positionId),
+      closedHistory: [cancelledPos, ...paperAccount.closedHistory]
+    };
+
+    updatePaperAccount(updated);
+  };
+
+  // Encerramento manual de posição aberta a mercado
   const handleClosePosition = (positionId: string) => {
     const pos = paperAccount.positions.find((p) => p.id === positionId);
-    if (!pos) return;
+    if (!pos || pos.status !== 'OPEN') return;
 
     const currentCoinPrice = assets.find((a) => a.symbol === pos.symbol)?.price || pos.currentPrice;
     const priceDiff =
@@ -309,7 +396,7 @@ export default function App() {
         {/* Banner Fixo de Modo Demo / Isenção no Topo */}
         <DisclaimerBanner compact />
 
-        {/* Header Superior Fixo */}
+        {/* Header Superior Fixo com indicação do intervalo de monitoramento */}
         <Header
           isLive={isLive}
           isFetching={isFetching}
@@ -317,6 +404,7 @@ export default function App() {
           isMobileFrame={isMobileFrame}
           onToggleFrame={() => setIsMobileFrame(!isMobileFrame)}
           activeScreenTitle={getScreenTitle()}
+          refreshIntervalSeconds={settings.refreshIntervalSeconds || 30}
         />
 
         {/* Conteúdo Principal com Scroll */}
@@ -363,6 +451,7 @@ export default function App() {
               assets={assets}
               onOpenNewTradeModal={() => handleOpenTradeModal(assets[0])}
               onClosePosition={handleClosePosition}
+              onCancelPendingOrder={handleCancelPendingOrder}
               onResetAccount={handleResetPaperAccount}
               onSelectCoinBySymbol={handleSelectCoinBySymbol}
             />

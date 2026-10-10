@@ -199,6 +199,38 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
           </div>
 
+          {/* Intervalo de Atualização de Cotações */}
+          <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-white">Intervalo de Atualização Periódica</span>
+              <span className="text-xs font-mono font-bold text-emerald-400">
+                {formData.refreshIntervalSeconds || 30}s
+              </span>
+            </div>
+            <div className="grid grid-cols-4 gap-1.5">
+              {[10, 15, 30, 60].map((sec) => (
+                <button
+                  key={sec}
+                  type="button"
+                  onClick={() => setFormData((prev) => ({ ...prev, refreshIntervalSeconds: sec }))}
+                  className={`py-1.5 rounded-lg text-xs font-mono font-medium border transition ${
+                    (formData.refreshIntervalSeconds || 30) === sec
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50'
+                      : 'bg-[#161D2B] text-slate-400 border-slate-700/80 hover:text-white'
+                  }`}
+                >
+                  {sec}s
+                </button>
+              ))}
+            </div>
+            <div className="bg-[#101520] border border-slate-800 rounded-lg p-2.5 text-[11px] text-slate-400 space-y-1">
+              <span className="text-amber-400 font-semibold block">Aviso sobre o Ciclo de Vida:</span>
+              <p>
+                O monitoramento periódico de preços e a verificação de ordens LIMIT pendentes e Stop-Loss ocorrem exclusivamente no navegador. <strong>O monitoramento é interrompido quando a aba ou a aplicação for fechada.</strong>
+              </p>
+            </div>
+          </div>
+
           {/* Binance */}
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 space-y-2.5">
             <div className="flex items-center justify-between">
@@ -234,29 +266,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 space-y-2.5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-orange-400" />
+                <span className="w-2 h-2 rounded-full bg-slate-500" />
                 <span className="text-xs font-bold text-white">Bybit V5 Public API</span>
               </div>
-              <span className="text-[10px] bg-emerald-500/15 text-emerald-400 px-2 py-0.5 rounded font-mono">
-                Conectado
+              <span className="text-[10px] bg-slate-800 text-slate-400 border border-slate-700/60 px-2 py-0.5 rounded font-mono">
+                Não Conectada (Pendente)
               </span>
             </div>
+            <p className="text-[11px] text-slate-400">
+              Integração com feeds públicos da Bybit planejada para futura versão. Não ativa nesta versão.
+            </p>
 
             <div>
               <label className="text-[10px] text-slate-400 block mb-1">
-                API Key Pública Bybit (Opcional Leitura)
+                API Key Pública Bybit (Opcional Leitura - Futura)
               </label>
               <input
                 type="text"
-                value={formData.exchange.bybitApiKeyPreview}
-                onChange={(e) =>
-                  setFormData((prev) => ({
-                    ...prev,
-                    exchange: { ...prev.exchange, bybitApiKeyPreview: e.target.value }
-                  }))
-                }
+                disabled
+                value="Integração futura - Somente leitura via backend"
                 placeholder="Chave pública apenas de leitura..."
-                className="w-full bg-[#161D2B] border border-slate-700/80 rounded-xl px-3 py-2 text-xs font-mono text-slate-300 focus:outline-none focus:border-orange-400"
+                className="w-full bg-[#161D2B] border border-slate-700/80 rounded-xl px-3 py-2 text-xs font-mono text-slate-500 cursor-not-allowed"
               />
             </div>
           </div>

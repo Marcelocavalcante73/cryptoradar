@@ -9,6 +9,7 @@ interface HeaderProps {
   isMobileFrame: boolean;
   onToggleFrame: () => void;
   activeScreenTitle: string;
+  refreshIntervalSeconds: number;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -17,7 +18,8 @@ export const Header: React.FC<HeaderProps> = ({
   onRefresh,
   isMobileFrame,
   onToggleFrame,
-  activeScreenTitle
+  activeScreenTitle,
+  refreshIntervalSeconds
 }) => {
   return (
     <header className="sticky top-0 z-40 bg-[#0B0E14]/95 backdrop-blur-md border-b border-slate-800/80 px-4 py-2.5 transition-all">
@@ -42,17 +44,23 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
 
         {/* Status & Controles Rápidos */}
-        <div className="flex items-center gap-2 shrink-0">
-          <div className="hidden sm:flex items-center gap-1.5 px-2 py-1 rounded-md bg-slate-900 border border-slate-800 text-[11px] text-slate-300">
-            <span className={`w-1.5 h-1.5 rounded-full ${isLive ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-            <span>{isLive ? 'Binance API' : 'Simulação Offline'}</span>
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          <div
+            className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-slate-900 border border-slate-800 text-[10px] sm:text-[11px] text-slate-300"
+            title={`Monitoramento de preços ativo a cada ${refreshIntervalSeconds}s no navegador. O monitoramento para imediatamente se o navegador ou aplicativo for fechado.`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${isLive ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+            <span className="hidden xs:inline">{isLive ? 'Binance API' : 'Modo DEMO'}</span>
+            <span className="text-[9px] text-slate-400 border-l border-slate-800 pl-1 font-mono">
+              {refreshIntervalSeconds}s
+            </span>
           </div>
 
           <button
             onClick={onRefresh}
             disabled={isFetching}
             className="p-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white transition disabled:opacity-50"
-            title="Atualizar cotações"
+            title={`Atualizar agora (Auto a cada ${refreshIntervalSeconds}s. O monitoramento para se a aba for fechada)`}
             aria-label="Atualizar cotações"
           >
             <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin text-emerald-400' : ''}`} />

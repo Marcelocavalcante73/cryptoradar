@@ -85,13 +85,15 @@ export interface PaperPosition {
   orderType: OrderType;
   entryPrice: number;
   currentPrice: number;
+  limitPrice?: number;  // Preço limite para ordens LIMIT
   amount: number;       // Quantidade da moeda
   investedUSDT: number; // Margem investida
   leverage: number;     // 1x, 2x, 5x, 10x
   targetPrice?: number;
   stopLossPrice?: number;
   openTimestamp: number;
-  status: 'OPEN' | 'CLOSED';
+  triggeredTimestamp?: number; // Momento em que a ordem LIMIT foi executada
+  status: 'PENDING' | 'OPEN' | 'CLOSED';
   closedTimestamp?: number;
   closePrice?: number;
   openFee: number;      // Taxa de abertura em USDT (ex: 0.05% do nocional)
@@ -99,7 +101,7 @@ export interface PaperPosition {
   totalFees?: number;   // Taxas acumuladas da operação
   realizedPnl?: number; // PnL líquido realizado
   realizedPnlPercent?: number;
-  closeReason?: 'MANUAL' | 'TAKE_PROFIT' | 'STOP_LOSS' | 'LIQUIDATION';
+  closeReason?: 'MANUAL' | 'TAKE_PROFIT' | 'STOP_LOSS' | 'LIQUIDATION' | 'CANCELLED';
   isDemo: true;
 }
 

@@ -63,7 +63,7 @@ export const DisclaimerBanner: React.FC<DisclaimerBannerProps> = ({
       <div className="space-y-0.5 pr-2">
         <p className="font-medium text-slate-200">Ambiente de Demonstração (Demo Sandbox)</p>
         <p className="text-slate-400 text-[11px] leading-relaxed">
-          O CryptoRadar v1.0 opera em modo simulado. Preços de referência da Binance/Bybit são consultados via API pública ou snapshot demonstrativo. Nenhuma chave privada é exigida.
+          O CryptoRadar opera em modo simulado. Cotações de referência ao vivo são consultadas via API pública da Binance (Bybit pendente de integração futura). <strong>O monitoramento de preços e ordens simuladas ocorre exclusivamente enquanto a aplicação estiver aberta no navegador e é interrompido ao fechar a aba ou o aplicativo.</strong>
         </p>
       </div>
     </div>

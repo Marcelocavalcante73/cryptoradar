@@ -1,4 +1,5 @@
 import { CryptoAsset, TechnicalSignal, CandleData } from '../types/crypto';
+import { calculateAllIndicators } from './indicators';
 
 export const INITIAL_ASSETS: CryptoAsset[] = [
   {
@@ -337,88 +338,7 @@ export function generateCandlesForAsset(asset: CryptoAsset, count: number = 36):
     });
   }
 
-  // Calcula indicadores técnicos (EMA 20, EMA 50, RSI 14, MACD)
-  return calculateTechnicalIndicators(candles, asset.price < 10 ? 4 : 2);
+  // Calcula indicadores técnicos (EMA 20, EMA 50, RSI 14, MACD) via Wilder smoothing
+  return calculateAllIndicators(candles, asset.price < 10 ? 4 : 2);
 }
 
-function calculateTechnicalIndicators(candles: CandleData[], decimals: number = 2): CandleData[] {
-  const result = [...candles];
-  if (result.length === 0) return result;
-  
-  // EMA 20
-  const k20 = 2 / (20 + 1);
-  let ema20 = result[0].close;
-  for (let i = 0; i < result.length; i++) {
-    ema20 = result[i].close * k20 + ema20 * (1 - k20);
-    result[i].ema20 = Number(ema20.toFixed(decimals));
-  }
-
-  // EMA 50
-  const k50 = 2 / (50 + 1);
-  let ema50 = result[0].close;
-  for (let i = 0; i < result.length; i++) {
-    ema50 = result[i].close * k50 + ema50 * (1 - k50);
-    result[i].ema50 = Number(ema50.toFixed(decimals));
-  }
-
-  // RSI 14 (Wilder's Smoothing)
-  const period = 14;
-  let gains = 0;
-  let losses = 0;
-
-  for (let i = 1; i <= period && i < result.length; i++) {
-    const diff = result[i].close - result[i - 1].close;
-    if (diff >= 0) gains += diff;
-    else losses += Math.abs(diff);
-  }
-
-  let avgGain = gains / period;
-  let avgLoss = losses / period;
-
-  for (let i = 0; i < result.length; i++) {
-    if (i < period) {
-      result[i].rsi = 50.0;
-      continue;
-    }
-    const diff = result[i].close - result[i - 1].close;
-    const gain = diff > 0 ? diff : 0;
-    const loss = diff < 0 ? Math.abs(diff) : 0;
-
-    avgGain = (avgGain * (period - 1) + gain) / period;
-    avgLoss = (avgLoss * (period - 1) + loss) / period;
-
-    const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-    const rsi = 100 - (100 / (1 + rs));
-    result[i].rsi = Number(Math.min(100, Math.max(0, rsi)).toFixed(1));
-  }
-
-  // MACD (12, 26, 9)
-  const k12 = 2 / (12 + 1);
-  const k26 = 2 / (26 + 1);
-  const k9 = 2 / (9 + 1);
-  let ema12 = result[0].close;
-  let ema26 = result[0].close;
-  let signal = 0;
-
-  for (let i = 0; i < result.length; i++) {
-    ema12 = result[i].close * k12 + ema12 * (1 - k12);
-    ema26 = result[i].close * k26 + ema26 * (1 - k26);
-    const macdLine = ema12 - ema26;
-    
-    // Inicialização coerente do sinal
-    if (i === 0) {
-      signal = macdLine;
-    } else {
-      signal = macdLine * k9 + signal * (1 - k9);
-    }
-    const histogram = macdLine - signal;
-
-    result[i].macd = {
-      macd: Number(macdLine.toFixed(decimals)),
-      signal: Number(signal.toFixed(decimals)),
-      histogram: Number(histogram.toFixed(decimals))
-    };
-  }
-
-  return result;
-}

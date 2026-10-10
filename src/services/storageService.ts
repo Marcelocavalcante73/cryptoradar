@@ -18,8 +18,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   exchange: {
     binanceEnabled: true,
     binanceApiKeyPreview: 'vm38...91ad (Apenas Leitura)',
-    bybitEnabled: true,
-    bybitApiKeyPreview: 'byb7...04ee (Apenas Leitura)',
+    bybitEnabled: false,
+    bybitApiKeyPreview: 'Não conectado (Integração pública pendente)',
     connectionMode: 'DIRECT_PUBLIC_API'
   },
   telegram: {

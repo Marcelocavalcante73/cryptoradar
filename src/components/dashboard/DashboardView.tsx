@@ -3,6 +3,7 @@ import { ArrowUpRight, ArrowDownRight, Radio, Activity, Wallet, ShieldAlert, Che
 import { CryptoAsset, TechnicalSignal } from '../../types/crypto';
 import { Sparkline } from '../common/Sparkline';
 import { Badge } from '../common/Badge';
+import { FearGreedIndex } from './FearGreedIndex';
 
 interface DashboardViewProps {
   assets: CryptoAsset[];
@@ -143,23 +144,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
       </section>
 
-      {/* Pulso do Mercado & Sentimento */}
-      <section className="bg-[#121722] border border-slate-800/90 rounded-2xl p-3.5">
-        <div className="grid grid-cols-3 gap-2 text-center divide-x divide-slate-800">
+      {/* Índice de Sentimento de Medo & Ganância (Calculado dinamicamente sobre os ativos) */}
+      <FearGreedIndex assets={assets} />
+
+      {/* Pulso Rápido do Mercado (Dominância & Volume) */}
+      <section className="bg-[#121722] border border-slate-800/90 rounded-2xl p-3">
+        <div className="grid grid-cols-2 gap-2 text-center divide-x divide-slate-800">
           <div>
-            <span className="text-[10px] text-slate-500 uppercase">Dominância BTC</span>
+            <span className="text-[10px] text-slate-500 uppercase">Dominância BTC (Estimada)</span>
             <p className="text-sm font-bold text-white font-mono mt-0.5">56.4%</p>
-            <span className="text-[9px] text-emerald-400">+0.4% hoje</span>
+            <span className="text-[9px] text-emerald-400 font-mono">+0.4% hoje</span>
           </div>
           <div>
-            <span className="text-[10px] text-slate-500 uppercase">Medo & Ganância</span>
-            <p className="text-sm font-bold text-amber-300 font-mono mt-0.5">68 / 100</p>
-            <span className="text-[9px] text-amber-400">Ganância (Demo)</span>
-          </div>
-          <div>
-            <span className="text-[10px] text-slate-500 uppercase">Vol. Global 24h</span>
+            <span className="text-[10px] text-slate-500 uppercase">Volume Global 24h</span>
             <p className="text-sm font-bold text-white font-mono mt-0.5">$74.2 B</p>
-            <span className="text-[9px] text-slate-400">Binance + Bybit</span>
+            <span className="text-[9px] text-slate-400 font-mono">Binance API + Ref</span>
           </div>
         </div>
       </section>

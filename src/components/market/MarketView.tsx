@@ -103,7 +103,7 @@ export const MarketView: React.FC<MarketViewProps> = ({
                   : 'bg-slate-900 text-slate-400 border border-slate-800 hover:text-white'
               }`}
             >
-              {ex === 'all' ? 'Todas' : ex === 'binance' ? 'Binance' : 'Bybit'}
+              {ex === 'all' ? 'Todas' : ex === 'binance' ? 'Binance (API Pública)' : 'Bybit (Pendente)'}
             </button>
           ))}
         </div>
@@ -144,6 +144,17 @@ export const MarketView: React.FC<MarketViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Aviso quando Bybit está selecionada */}
+      {selectedExchange === 'bybit' && (
+        <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 text-[11px] text-slate-300 flex items-start gap-2">
+          <span className="w-2 h-2 rounded-full bg-slate-500 shrink-0 mt-1" />
+          <div>
+            <strong className="text-white block font-semibold">Bybit: Integração Pendente (Não Conectada)</strong>
+            <span>Os pares abaixo são apresentados com cotações de referência da API pública da Binance ou do modo DEMO local.</span>
+          </div>
+        </div>
+      )}
 
       {/* Lista de Criptomoedas */}
       <div className="space-y-1.5">
@@ -186,13 +197,13 @@ export const MarketView: React.FC<MarketViewProps> = ({
                         /{coin.quoteAsset}
                       </span>
                       {coin.exchanges.includes('binance') && (
-                        <span className="text-[9px] bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 px-1 rounded">
-                          BN
+                        <span title="Cotação de referência: Binance" className="text-[9px] bg-yellow-500/10 text-yellow-400 border border-yellow-500/20 px-1 rounded">
+                          BINANCE
                         </span>
                       )}
-                      {coin.exchanges.includes('bybit') && (
-                        <span className="text-[9px] bg-orange-500/10 text-orange-400 border border-orange-500/20 px-1 rounded">
-                          BY
+                      {coin.isDemoData && (
+                        <span title="Dados demonstrativos locais" className="text-[9px] bg-amber-500/10 text-amber-300 border border-amber-500/20 px-1 rounded">
+                          DEMO
                         </span>
                       )}
                     </div>
