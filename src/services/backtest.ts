@@ -19,6 +19,7 @@ export interface BacktestOptions {
   slippageRate: number; // por lado, ex: 0.0005
   maxHoldBars: number;
   minScore?: number;    // filtro adicional sobre a pontuação do motor
+  longOnly?: boolean;   // spot: ignora sinais de VENDA (não há short)
 }
 
 export const DEFAULT_BACKTEST_OPTIONS: BacktestOptions = {
@@ -123,7 +124,7 @@ export function runBacktest(
   let i = MIN_CANDLES;
   while (i < candles.length - 1) {
     const sig = evaluateSignal(candles.slice(0, i + 1), { symbol, baseAsset, timeframe });
-    if (!sig || (opt.minScore !== undefined && Math.abs(sig.score) < opt.minScore)) {
+    if (!sig || (opt.longOnly && sig.direction === 'SHORT') || (opt.minScore !== undefined && Math.abs(sig.score) < opt.minScore)) {
       i++;
       continue;
     }

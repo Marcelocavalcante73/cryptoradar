@@ -175,7 +175,8 @@ app.get('/api/backtest', async (req: Request, res: Response) => {
 
   try {
     const candles = await fetchHistory(symbol, tf, bars);
-    const result = runBacktest(candles, symbol, symbol.replace(/USDT$/, ''), tf);
+    const longOnly = req.query.both !== 'true' && process.env.MARKET_MODE !== 'futures';
+    const result = runBacktest(candles, symbol, symbol.replace(/USDT$/, ''), tf, { longOnly });
     res.json({ ...result, trades: result.trades.slice(-100) });
   } catch (e: any) {
     res.status(502).json({ error: `Falha ao obter histórico da Binance: ${e?.message ?? 'indisponível'}` });

@@ -18,7 +18,10 @@ const MAX_ALERTS_PER_SCAN = 10;
 const CONCURRENCY = 8;
 const DATA_FILE = path.resolve(process.cwd(), 'data', 'signals.json');
 
+export const MARKET_MODE: 'spot' | 'futures' = process.env.MARKET_MODE === 'futures' ? 'futures' : 'spot';
+
 export interface StoredSignal extends EngineSignal {
+  spotExit?: boolean; // spot: VENDA = sair de posição que você já possui (não é operação a descoberto)
   createdAt: number;
   closedAt?: number;
   closePrice?: number;
@@ -29,10 +32,11 @@ export interface ScanState {
   running: boolean;
   lastScanAt: number | null;
   lastScanDurationMs: number | null;
+  marketMode: 'spot' | 'futures';
   lastError: string | null;
   scannedPairs: number;
   failedPairs: number;
-  universe: Pick<Universe, 'source' | 'fetchedAt' | 'skipped'> & { count: number } | null;
+  universe: Pick<Universe, 'source' | 'fetchedAt' | 'skipped' | 'exchanges'> & { count: number } | null;
   signals: StoredSignal[];
 }
 
@@ -40,6 +44,7 @@ const state: ScanState = {
   running: false,
   lastScanAt: null,
   lastScanDurationMs: null,
+  marketMode: MARKET_MODE,
   lastError: null,
   scannedPairs: 0,
   failedPairs: 0,
@@ -108,15 +113,17 @@ function updateOutcomes(prices: Map<string, number>) {
   }
 }
 
-export function formatTelegramAlert(s: EngineSignal): string {
+export function formatTelegramAlert(s: EngineSignal, mode: 'spot' | 'futures' = MARKET_MODE): string {
   const buy = s.direction === 'LONG';
+  const spotExit = mode === 'spot' && !buy;
   const fmt = (n: number) => n.toLocaleString('en-US', { maximumFractionDigits: 8 });
   return [
-    `${buy ? '🟢 *COMPRA*' : '🔴 *VENDA*'} ${s.symbol} (${s.timeframe})`,
+    `${buy ? '🟢 *COMPRA*' : spotExit ? '🔴 *VENDA — sair da posição*' : '🔴 *VENDA (short)*'} ${s.symbol} (${s.timeframe})`,
     `Pontuação: ${s.score > 0 ? '+' : ''}${s.score}/100 — ${s.strategyName}`,
-    `Entrada: ${fmt(s.entryPrice)}`,
-    `Alvo: ${fmt(s.targetPrice)}`,
-    `Stop: ${fmt(s.stopLossPrice)}  (R:R ${s.riskRewardRatio})`,
+    spotExit ? `Preço de referência: ${fmt(s.entryPrice)}` : `Entrada: ${fmt(s.entryPrice)}`,
+    ...(spotExit
+      ? ['Spot: use só se você já possui a moeda. Não é operação a descoberto.']
+      : [`Alvo: ${fmt(s.targetPrice)}`, `Stop: ${fmt(s.stopLossPrice)}  (R:R ${s.riskRewardRatio})`]),
     '',
     '_Sinal técnico automático, não é recomendação de investimento._'
   ].join('\n');
@@ -151,6 +158,7 @@ export async function runScan(): Promise<void> {
       source: universe.source,
       fetchedAt: universe.fetchedAt,
       skipped: universe.skipped,
+      exchanges: universe.exchanges,
       count: universe.coins.length
     };
 
@@ -166,7 +174,7 @@ export async function runScan(): Promise<void> {
         const candles = await fetchClosedCandles(coin.symbol, tf, prices.get(coin.symbol) ?? 1);
         const sig = evaluateSignal(candles, { symbol: coin.symbol, baseAsset: coin.baseAsset, timeframe: tf });
         if (sig && !state.signals.some((s) => s.id === sig.id)) {
-          fresh.push({ ...sig, createdAt: Date.now() });
+          fresh.push({ ...sig, createdAt: Date.now(), spotExit: MARKET_MODE === 'spot' && sig.direction === 'SHORT' });
         }
       } catch {
         failed++;
