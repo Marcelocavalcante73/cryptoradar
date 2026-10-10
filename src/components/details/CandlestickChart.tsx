@@ -173,17 +173,25 @@ export const CandlestickChart: React.FC<CandlestickChartProps> = ({
 
         {/* Indicadores no cabeçalho */}
         <div className="flex items-center gap-2 text-[10px]">
-          {showEma20 && activeCandle?.ema20 && (
-            <span className="text-cyan-400">EMA20: ${activeCandle.ema20.toLocaleString()}</span>
+          {showEma20 && (
+            <span className="text-cyan-400">
+              EMA20: {activeCandle?.ema20 !== undefined ? `$${activeCandle.ema20.toLocaleString()}` : 'Aquecendo'}
+            </span>
           )}
-          {showEma50 && activeCandle?.ema50 && (
-            <span className="text-purple-400">EMA50: ${activeCandle.ema50.toLocaleString()}</span>
+          {showEma50 && (
+            <span className="text-purple-400">
+              EMA50: {activeCandle?.ema50 !== undefined ? `$${activeCandle.ema50.toLocaleString()}` : 'Aquecendo'}
+            </span>
           )}
-          {showRsi && activeCandle?.rsi && (
-            <span className="text-amber-400">RSI: {activeCandle.rsi.toFixed(1)}</span>
+          {showRsi && (
+            <span className="text-amber-400">
+              RSI: {activeCandle?.rsi !== undefined ? activeCandle.rsi.toFixed(1) : 'Aquecendo'}
+            </span>
           )}
-          {showMacd && activeCandle?.macd && (
-            <span className="text-cyan-400">MACD: {activeCandle.macd.macd} | Sig: {activeCandle.macd.signal}</span>
+          {showMacd && (
+            <span className="text-cyan-400">
+              MACD: {activeCandle?.macd !== undefined ? `${activeCandle.macd.macd} | Sig: ${activeCandle.macd.signal}` : 'Aquecendo'}
+            </span>
           )}
         </div>
       </div>
@@ -385,11 +393,12 @@ export const CandlestickChart: React.FC<CandlestickChartProps> = ({
                 strokeWidth="1.5"
                 points={candles
                   .map((c, i) => {
-                    const rsiVal = c.rsi ?? 50;
+                    if (c.rsi === undefined) return null;
                     const x = 20 + i * candleWidth + candleBodyWidth / 2;
-                    const y = subPanelHeight - (rsiVal / 100) * subPanelHeight;
+                    const y = subPanelHeight - (c.rsi / 100) * subPanelHeight;
                     return `${x.toFixed(1)},${y.toFixed(1)}`;
                   })
+                  .filter(Boolean)
                   .join(' ')}
               />
             </g>

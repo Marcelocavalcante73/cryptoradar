@@ -35,8 +35,8 @@ export const INITIAL_PAPER_ACCOUNT: PaperAccount = {
   virtualBalance: 5664.71,
   initialBalance: 10000.00,
   totalTrades: 3,
-  winTrades: 2,
-  lossTrades: 1,
+  winTrades: 1,
+  lossTrades: 0,
   totalFeesPaid: 4.79,
   positions: [
     {

@@ -191,6 +191,10 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
                     <span className="text-[10px] bg-slate-900 border border-slate-800 text-slate-400 px-1.5 py-0.5 rounded font-mono">
                       {signal.timeframe}
                     </span>
+
+                    <span className="text-[9px] bg-amber-500/10 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded font-mono">
+                      DEMO
+                    </span>
                   </div>
 
                   {getStatusBadge(signal.status)}

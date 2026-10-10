@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Wallet, Plus, RotateCcw, ArrowUpRight, ArrowDownRight, CheckCircle2, XCircle, TrendingUp, Clock, Ban } from 'lucide-react';
+import { Wallet, Plus, RotateCcw, ArrowUpRight, ArrowDownRight, CheckCircle2, XCircle, TrendingUp, Clock, Ban, ShieldCheck } from 'lucide-react';
 import { PaperAccount, PaperPosition, CryptoAsset } from '../../types/crypto';
 import { Badge } from '../common/Badge';
+import { calculateAccountMetrics } from '../../services/paperTradingService';
 
 interface PaperTradingViewProps {
   account: PaperAccount;
@@ -32,10 +33,12 @@ export const PaperTradingView: React.FC<PaperTradingViewProps> = ({
   const openPositions = account.positions.filter((p) => p.status === 'OPEN');
   const pendingOrders = account.positions.filter((p) => p.status === 'PENDING');
 
-  // Cálculo de PnL não realizado EXCLUSIVAMENTE para ordens já abertas e preenchidas
-  let totalUnrealizedPnl = 0;
+  // Métricas contábeis auditadas
+  const metrics = calculateAccountMetrics(account, assets);
+
+  // Posições abertas enriquecidas com preços ao vivo
   const enrichedOpenPositions = openPositions.map((pos) => {
-    const livePrice = priceMap.get(pos.symbol) || pos.currentPrice;
+    const livePrice = priceMap.get(pos.symbol) || pos.currentPrice || pos.entryPrice;
     const priceDiff = pos.direction === 'LONG' ? livePrice - pos.entryPrice : pos.entryPrice - livePrice;
     const percentDiff = (priceDiff / pos.entryPrice) * pos.leverage;
     const grossPnl = pos.investedUSDT * percentDiff;
@@ -43,24 +46,20 @@ export const PaperTradingView: React.FC<PaperTradingViewProps> = ({
     const estimatedCloseFee = Number(((pos.amount * livePrice) * 0.0005).toFixed(4));
     const netPnl = grossPnl - openFee - estimatedCloseFee;
 
-    totalUnrealizedPnl += netPnl;
-
     return {
       ...pos,
       currentPrice: livePrice,
       openFee,
       estimatedCloseFee,
       grossPnl,
-      unrealizedPnl: netPnl,
-      unrealizedPnlPercent: (netPnl / pos.investedUSDT) * 100
+      unrealizedPnl: Number(netPnl.toFixed(2)),
+      unrealizedPnlPercent: Number(((netPnl / pos.investedUSDT) * 100).toFixed(2))
     };
   });
 
-  const totalEquity = account.virtualBalance + totalUnrealizedPnl;
-  const initialBalance = account.initialBalance || 10000;
-  const totalClosed = account.closedHistory.length;
-  const winCount = account.closedHistory.filter((p) => (p.realizedPnl || 0) > 0).length;
-  const winRate = totalClosed > 0 ? ((winCount / totalClosed) * 100).toFixed(0) : '0';
+  const totalEquity = metrics.totalEquity;
+  const totalUnrealizedPnl = metrics.unrealizedNetPnl;
+  const winRate = metrics.winRatePercent.toFixed(0);
 
   return (
     <div className="space-y-4 pb-24">
@@ -87,12 +86,19 @@ export const PaperTradingView: React.FC<PaperTradingViewProps> = ({
           <Badge variant="demo" size="sm">PAPER DEMO</Badge>
         </div>
 
-        {/* Detalhes de Saldo, PnL e Taxas de Corretagem */}
-        <div className="grid grid-cols-4 gap-1.5 mt-4 pt-3 border-t border-slate-800/80 text-[11px] font-mono">
+        {/* Detalhes de Saldo, Margem, PnL e Taxas de Corretagem */}
+        <div className="grid grid-cols-5 gap-1 mt-4 pt-3 border-t border-slate-800/80 text-[10px] font-mono">
           <div>
             <span className="text-[9px] text-slate-500 uppercase block font-sans">Saldo Livre</span>
             <span className="text-slate-200 font-bold truncate block">
               ${account.virtualBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </span>
+          </div>
+
+          <div>
+            <span className="text-[9px] text-slate-500 uppercase block font-sans">Margem Reserv.</span>
+            <span className="text-cyan-400 font-bold truncate block">
+              ${metrics.totalReservedMargin.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </span>
           </div>
 
@@ -112,7 +118,7 @@ export const PaperTradingView: React.FC<PaperTradingViewProps> = ({
 
           <div>
             <span className="text-[9px] text-slate-500 uppercase block font-sans">Taxa Acerto</span>
-            <span className="text-cyan-400 font-bold truncate block">
+            <span className="text-emerald-400 font-bold truncate block">
               {winRate}%
             </span>
           </div>

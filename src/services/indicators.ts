@@ -15,82 +15,59 @@ export interface SentimentIndex {
 }
 
 /**
- * Cálculo do RSI (Relative Strength Index) utilizando a suavização de Wilder (1978).
- * Trata rigorosamente:
- * - Séries curtas (< período)
- * - Cenários sem perdas (apenas altas => RSI = 100.0)
- * - Cenários sem ganhos (apenas quedas => RSI = 0.0)
- * - Cenários sem variação (preço estável => RSI = 50.0)
+ * Cálculo do RSI (Relative Strength Index) utilizando a suavização estrita de J. Welles Wilder Jr. (1978).
+ * 
+ * Regras auditadas de conformidade matemática:
+ * 1. Warm-up: Nas primeiras `period` velas (índices 0 até `period - 1`), o indicador está em aquecimento
+ *    e retorna estritamente `undefined` (diferencia indisponível de neutro 50.0).
+ * 2. Inicialização: No índice `period` (após exatamente `period` variações de preço),
+ *    calcula-se a média aritmética simples inicial de ganhos e perdas (SMA dos primeiros `period` deltas).
+ * 3. Suavização: A partir do índice `period + 1`, aplica-se o alisamento exponencial de Wilder:
+ *    avgGain = (prevAvgGain * (period - 1) + gain) / period
+ *    avgLoss = (prevAvgLoss * (period - 1) + loss) / period
+ * 4. Casos Limite Legítimos:
+ *    - Se avgGain === 0 e avgLoss === 0 (mercado flat por todo o período) => RSI = 50.0 (neutro legítimo).
+ *    - Se avgLoss === 0 (somente altas) => RSI = 100.0.
+ *    - Se avgGain === 0 (somente baixas) => RSI = 0.0.
  */
 export function calculateWilderRSI(candles: CandleData[], period: number = 14): CandleData[] {
   const result = candles.map((c) => ({ ...c }));
   if (result.length === 0) return result;
 
-  if (result.length === 1) {
-    result[0].rsi = 50.0;
-    return result;
-  }
-
-  // Primeira vela não possui variação anterior
-  result[0].rsi = 50.0;
-
+  // Séries curtas ou em período de aquecimento: todos os candles anteriores ao período ficam indefinidos
   if (result.length <= period) {
-    // Série curta: menor ou igual ao período configurado (ex: <= 14)
-    let cumulativeGain = 0;
-    let cumulativeLoss = 0;
-
-    for (let i = 1; i < result.length; i++) {
-      const diff = result[i].close - result[i - 1].close;
-      if (diff > 0) cumulativeGain += diff;
-      else if (diff < 0) cumulativeLoss += Math.abs(diff);
-
-      if (cumulativeGain === 0 && cumulativeLoss === 0) {
-        result[i].rsi = 50.0; // Sem ganhos e sem perdas
-      } else if (cumulativeLoss === 0) {
-        result[i].rsi = 100.0; // Apenas ganhos, sem perdas
-      } else if (cumulativeGain === 0) {
-        result[i].rsi = 0.0; // Apenas perdas, sem ganhos
-      } else {
-        const rs = cumulativeGain / cumulativeLoss;
-        const rsi = 100 - (100 / (1 + rs));
-        result[i].rsi = Number(Math.min(100, Math.max(0, rsi)).toFixed(1));
-      }
+    for (let i = 0; i < result.length; i++) {
+      result[i].rsi = undefined;
     }
-
     return result;
   }
 
-  // Série com mais velas que o período configurado:
-  // Inicialização no índice `period` acumulando os primeiros `period` deltas
+  // Velas 0 até period - 1 estão em warm-up (cálculo indisponível)
+  for (let i = 0; i < period; i++) {
+    result[i].rsi = undefined;
+  }
+
+  // Acumulação dos primeiros `period` deltas (índices 1 a period)
   let initialGainSum = 0;
   let initialLossSum = 0;
 
-  for (let i = 1; i < period; i++) {
-    const diff = result[i].close - result[i - 1].close;
+  for (let i = 1; i <= period; i++) {
+    const prevClose = result[i - 1].close;
+    const currentClose = result[i].close;
+
+    if (!Number.isFinite(prevClose) || !Number.isFinite(currentClose)) {
+      continue;
+    }
+
+    const diff = currentClose - prevClose;
     if (diff > 0) initialGainSum += diff;
     else if (diff < 0) initialLossSum += Math.abs(diff);
-
-    if (initialGainSum === 0 && initialLossSum === 0) {
-      result[i].rsi = 50.0;
-    } else if (initialLossSum === 0) {
-      result[i].rsi = 100.0;
-    } else if (initialGainSum === 0) {
-      result[i].rsi = 0.0;
-    } else {
-      const rs = initialGainSum / initialLossSum;
-      const rsi = 100 - (100 / (1 + rs));
-      result[i].rsi = Number(Math.min(100, Math.max(0, rsi)).toFixed(1));
-    }
   }
-
-  // Delta da vela no índice `period`
-  const periodDiff = result[period].close - result[period - 1].close;
-  if (periodDiff > 0) initialGainSum += periodDiff;
-  else if (periodDiff < 0) initialLossSum += Math.abs(periodDiff);
 
   let avgGain = initialGainSum / period;
   let avgLoss = initialLossSum / period;
 
+  // Cálculo da primeira vela no índice `period`
   if (avgGain === 0 && avgLoss === 0) {
     result[period].rsi = 50.0;
   } else if (avgLoss === 0) {
@@ -103,9 +80,17 @@ export function calculateWilderRSI(candles: CandleData[], period: number = 14): 
     result[period].rsi = Number(Math.min(100, Math.max(0, rsi)).toFixed(1));
   }
 
-  // A partir de period + 1: aplicação estrita da suavização de Wilder
+  // A partir de `period + 1`: aplicação do Wilder smoothing
   for (let i = period + 1; i < result.length; i++) {
-    const diff = result[i].close - result[i - 1].close;
+    const prevClose = result[i - 1].close;
+    const currentClose = result[i].close;
+
+    if (!Number.isFinite(prevClose) || !Number.isFinite(currentClose)) {
+      result[i].rsi = result[i - 1].rsi;
+      continue;
+    }
+
+    const diff = currentClose - prevClose;
     const gain = diff > 0 ? diff : 0;
     const loss = diff < 0 ? Math.abs(diff) : 0;
 
@@ -129,21 +114,54 @@ export function calculateWilderRSI(candles: CandleData[], period: number = 14): 
 }
 
 /**
- * Calcula EMA (Exponential Moving Average) para um período específico.
+ * Calcula EMA (Exponential Moving Average) com período de aquecimento explícito.
+ * - Índices antes de `period - 1`: `undefined` (aquecimento / indisponível).
+ * - Índice `period - 1`: Média aritmética simples (SMA) dos primeiros `period` fechamentos.
+ * - Índices `>= period`: Fórmula exponencial de alisamento com multiplicador k = 2 / (period + 1).
  */
 export function calculateEMA(candles: CandleData[], period: number, decimals: number = 2): CandleData[] {
   const result = candles.map((c) => ({ ...c }));
   if (result.length === 0) return result;
 
-  const k = 2 / (period + 1);
-  let ema = result[0].close;
+  // Se a série tiver menos velas que o período necessário, a EMA fica indefinida
+  if (result.length < period) {
+    for (let i = 0; i < result.length; i++) {
+      if (period === 20) result[i].ema20 = undefined;
+      else if (period === 50) result[i].ema50 = undefined;
+    }
+    return result;
+  }
 
-  for (let i = 0; i < result.length; i++) {
-    ema = result[i].close * k + ema * (1 - k);
+  // Warm-up: velas antes de period - 1
+  for (let i = 0; i < period - 1; i++) {
+    if (period === 20) result[i].ema20 = undefined;
+    else if (period === 50) result[i].ema50 = undefined;
+  }
+
+  // Inicialização no índice period - 1 com a SMA dos primeiros `period` valores
+  let sum = 0;
+  for (let i = 0; i < period; i++) {
+    sum += Number.isFinite(result[i].close) ? result[i].close : 0;
+  }
+  let currentEma = sum / period;
+
+  if (period === 20) {
+    result[period - 1].ema20 = Number(currentEma.toFixed(decimals));
+  } else if (period === 50) {
+    result[period - 1].ema50 = Number(currentEma.toFixed(decimals));
+  }
+
+  // Demais velas aplicam o multiplicador exponencial k
+  const k = 2 / (period + 1);
+
+  for (let i = period; i < result.length; i++) {
+    const close = Number.isFinite(result[i].close) ? result[i].close : currentEma;
+    currentEma = close * k + currentEma * (1 - k);
+
     if (period === 20) {
-      result[i].ema20 = Number(ema.toFixed(decimals));
+      result[i].ema20 = Number(currentEma.toFixed(decimals));
     } else if (period === 50) {
-      result[i].ema50 = Number(ema.toFixed(decimals));
+      result[i].ema50 = Number(currentEma.toFixed(decimals));
     }
   }
 
@@ -151,7 +169,11 @@ export function calculateEMA(candles: CandleData[], period: number, decimals: nu
 }
 
 /**
- * Calcula MACD (Moving Average Convergence Divergence) e Linha de Sinal.
+ * Calcula MACD (Moving Average Convergence Divergence) e Linha de Sinal com aquecimento estrito.
+ * - MACD Line = EMA(fast) - EMA(slow). Exige `slowPeriod` velas para aquecimento da EMA lenta.
+ * - Signal Line = EMA(signalPeriod) da MACD Line. Exige `slowPeriod + signalPeriod - 1` velas.
+ * - Histogram = MACD Line - Signal Line.
+ * - Antes desse aquecimento, `macd` retorna `undefined` diferenciando dado indisponível.
  */
 export function calculateMACD(
   candles: CandleData[],
@@ -163,30 +185,85 @@ export function calculateMACD(
   const result = candles.map((c) => ({ ...c }));
   if (result.length === 0) return result;
 
-  const kFast = 2 / (fastPeriod + 1);
-  const kSlow = 2 / (slowPeriod + 1);
-  const kSignal = 2 / (signalPeriod + 1);
+  const minWarmup = slowPeriod + signalPeriod - 1; // Ex: 26 + 9 - 1 = 34 velas
 
-  let emaFast = result[0].close;
-  let emaSlow = result[0].close;
-  let signal = 0;
-
-  for (let i = 0; i < result.length; i++) {
-    emaFast = result[i].close * kFast + emaFast * (1 - kFast);
-    emaSlow = result[i].close * kSlow + emaSlow * (1 - kSlow);
-    const macdLine = emaFast - emaSlow;
-
-    if (i === 0) {
-      signal = macdLine;
-    } else {
-      signal = macdLine * kSignal + signal * (1 - kSignal);
+  // Se a série for muito curta para inicialização completa do MACD + Sinal, define como undefined
+  if (result.length < minWarmup) {
+    for (let i = 0; i < result.length; i++) {
+      result[i].macd = undefined;
     }
-    const histogram = macdLine - signal;
+    return result;
+  }
+
+  // 1. Calcula EMA Rápida (12)
+  const kFast = 2 / (fastPeriod + 1);
+  const fastEmaValues: (number | undefined)[] = new Array(result.length).fill(undefined);
+  let sumFast = 0;
+  for (let i = 0; i < fastPeriod; i++) sumFast += result[i].close;
+  let currentFastEma = sumFast / fastPeriod;
+  fastEmaValues[fastPeriod - 1] = currentFastEma;
+  for (let i = fastPeriod; i < result.length; i++) {
+    currentFastEma = result[i].close * kFast + currentFastEma * (1 - kFast);
+    fastEmaValues[i] = currentFastEma;
+  }
+
+  // 2. Calcula EMA Lenta (26)
+  const kSlow = 2 / (slowPeriod + 1);
+  const slowEmaValues: (number | undefined)[] = new Array(result.length).fill(undefined);
+  let sumSlow = 0;
+  for (let i = 0; i < slowPeriod; i++) sumSlow += result[i].close;
+  let currentSlowEma = sumSlow / slowPeriod;
+  slowEmaValues[slowPeriod - 1] = currentSlowEma;
+  for (let i = slowPeriod; i < result.length; i++) {
+    currentSlowEma = result[i].close * kSlow + currentSlowEma * (1 - kSlow);
+    slowEmaValues[i] = currentSlowEma;
+  }
+
+  // 3. Linha MACD (Fast - Slow)
+  const macdLineValues: (number | undefined)[] = new Array(result.length).fill(undefined);
+  for (let i = slowPeriod - 1; i < result.length; i++) {
+    const f = fastEmaValues[i];
+    const s = slowEmaValues[i];
+    if (f !== undefined && s !== undefined) {
+      macdLineValues[i] = f - s;
+    }
+  }
+
+  // 4. Linha de Sinal: EMA(signalPeriod) sobre a linha MACD
+  // Começa no índice (slowPeriod - 1) + (signalPeriod - 1) = minWarmup - 1
+  const kSignal = 2 / (signalPeriod + 1);
+  let sumSignal = 0;
+  const signalStartIndex = slowPeriod - 1; // Índice onde a MACD Line começa a existir
+  const signalInitIndex = signalStartIndex + signalPeriod - 1; // Onde a SMA inicial do Sinal pode ser calculada
+
+  for (let i = signalStartIndex; i <= signalInitIndex; i++) {
+    sumSignal += macdLineValues[i]!;
+  }
+  let currentSignal = sumSignal / signalPeriod;
+
+  // Marca velas antes do aquecimento total como undefined
+  for (let i = 0; i < signalInitIndex; i++) {
+    result[i].macd = undefined;
+  }
+
+  // Inicializa o primeiro valor completo de MACD
+  const initialMacd = macdLineValues[signalInitIndex]!;
+  result[signalInitIndex].macd = {
+    macd: Number(initialMacd.toFixed(decimals)),
+    signal: Number(currentSignal.toFixed(decimals)),
+    histogram: Number((initialMacd - currentSignal).toFixed(decimals))
+  };
+
+  // Calcula subsequentes
+  for (let i = signalInitIndex + 1; i < result.length; i++) {
+    const macdVal = macdLineValues[i]!;
+    currentSignal = macdVal * kSignal + currentSignal * (1 - kSignal);
+    const hist = macdVal - currentSignal;
 
     result[i].macd = {
-      macd: Number(macdLine.toFixed(decimals)),
-      signal: Number(signal.toFixed(decimals)),
-      histogram: Number(histogram.toFixed(decimals))
+      macd: Number(macdVal.toFixed(decimals)),
+      signal: Number(currentSignal.toFixed(decimals)),
+      histogram: Number(hist.toFixed(decimals))
     };
   }
 
@@ -205,11 +282,8 @@ export function calculateAllIndicators(candles: CandleData[], decimals: number =
 }
 
 /**
- * Calcula o Índice de Sentimento (Fear & Greed) com base nas flutuações de preços dos ativos monitorados.
- * Combina:
- * 1. Momentum ponderado de 24h (50% do peso, com maior relevância para BTC, ETH e SOL)
- * 2. Posição relativa dentro da amplitude diária [High24h - Low24h] (30% do peso)
- * 3. Amplitude de mercado (proporção de moedas em alta vs baixa) (20% do peso)
+ * Calcula o Índice de Sentimento (Fear & Greed) com base nas flutuações dos ativos monitorados.
+ * Combina momentum ponderado de 24h, posição no range diário e amplitude de mercado.
  */
 export function calculateFearGreedIndex(assets: CryptoAsset[]): SentimentIndex {
   if (!assets || assets.length === 0) {
@@ -228,7 +302,6 @@ export function calculateFearGreedIndex(assets: CryptoAsset[]): SentimentIndex {
     };
   }
 
-  // 1. Momentum ponderado de 24h
   let totalWeight = 0;
   let weightedChangeSum = 0;
   let rawChangeSum = 0;
@@ -244,7 +317,6 @@ export function calculateFearGreedIndex(assets: CryptoAsset[]): SentimentIndex {
     if (change > 0) advancers++;
     else if (change < 0) decliners++;
 
-    // Pesos específicos de dominância
     let weight = 1.0;
     if (asset.symbol === 'BTCUSDT') weight = 4.0;
     else if (asset.symbol === 'ETHUSDT') weight = 2.5;
@@ -253,7 +325,6 @@ export function calculateFearGreedIndex(assets: CryptoAsset[]): SentimentIndex {
     weightedChangeSum += change * weight;
     totalWeight += weight;
 
-    // Amplitude dentro do range 24h (High - Low)
     if (asset.high24h > asset.low24h && asset.price >= asset.low24h) {
       const posInRange = Math.max(0, Math.min(1, (asset.price - asset.low24h) / (asset.high24h - asset.low24h)));
       rangeScoreSum += posInRange * weight;
@@ -264,17 +335,11 @@ export function calculateFearGreedIndex(assets: CryptoAsset[]): SentimentIndex {
   const weightedChange = totalWeight > 0 ? weightedChangeSum / totalWeight : 0;
   const averageChange = Number((rawChangeSum / assets.length).toFixed(2));
 
-  // Converte momentum ponderado (-8% a +8% representa faixa usual de alta/baixa) para escala 0 a 100
-  // 0% -> 50 | +8% -> 90 | -8% -> 10
+  // Escala de momentum (-8% a +8% mapeia para 10 a 90)
   const momentumScore = Math.max(5, Math.min(95, 50 + (weightedChange / 8) * 40));
-
-  // Range score (proximidade de máximas vs mínimas de 24h)
   const rangeScore = validRangeCount > 0 ? Math.max(5, Math.min(95, (rangeScoreSum / validRangeCount) * 100)) : 50;
-
-  // Breadth score (percentual de ativos em alta)
   const breadthScore = Math.max(5, Math.min(95, (advancers / assets.length) * 100));
 
-  // Pontuação final composta (0 a 100)
   const rawScore = Math.round(0.50 * momentumScore + 0.30 * rangeScore + 0.20 * breadthScore);
   const score = Math.max(0, Math.min(100, rawScore));
 
@@ -336,4 +401,3 @@ export function calculateFearGreedIndex(assets: CryptoAsset[]): SentimentIndex {
     totalAssets: assets.length
   };
 }
-

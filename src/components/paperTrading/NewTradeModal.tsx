@@ -31,10 +31,12 @@ export const NewTradeModal: React.FC<NewTradeModalProps> = ({
   const [enableSl, setEnableSl] = useState(true);
   const [tpPrice, setTpPrice] = useState<number>(0);
   const [slPrice, setSlPrice] = useState<number>(0);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Sincronização incondicional de todos os hooks quando o modal abre ou a moeda selecionada muda
   useEffect(() => {
     if (isOpen) {
+      setErrorMsg(null);
       const targetSymbol = initialAsset ? initialAsset.symbol : selectedSymbol;
       const target = assets.find((a) => a.symbol === targetSymbol) || initialAsset || assets[0];
       if (target) {
@@ -100,28 +102,30 @@ export const NewTradeModal: React.FC<NewTradeModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    setErrorMsg(null);
+
     if (amountUSDT <= 0) {
-      alert('Informe um valor de investimento válido em USDT.');
+      setErrorMsg('Informe um valor de investimento válido em USDT.');
       return;
     }
 
     if (totalRequiredBalance > virtualBalance) {
-      alert(`Saldo virtual insuficiente. Disponível: $${virtualBalance.toFixed(2)} USDT. Necessário: $${totalRequiredBalance.toFixed(2)} USDT (incluindo taxa de $${estimatedOpenFee.toFixed(2)}).`);
+      setErrorMsg(`Saldo virtual insuficiente. Disponível: $${virtualBalance.toFixed(2)} USDT. Necessário: $${totalRequiredBalance.toFixed(2)} USDT (incluindo taxa de $${estimatedOpenFee.toFixed(2)}).`);
       return;
     }
 
     // Validação estrita para ordens LIMIT
     if (orderType === 'LIMIT') {
       if (limitPrice <= 0) {
-        alert('Informe um preço limite válido.');
+        setErrorMsg('Informe um preço limite válido.');
         return;
       }
       if (direction === 'LONG' && limitPrice > currentPrice) {
-        alert(`Para ordens de COMPRA (LONG) a limite, o preço limite ($${limitPrice}) deve ser menor ou igual ao preço atual ($${currentPrice}).`);
+        setErrorMsg(`Para ordens de COMPRA (LONG) a limite, o preço limite ($${limitPrice}) deve ser menor ou igual ao preço atual ($${currentPrice}).`);
         return;
       }
       if (direction === 'SHORT' && limitPrice < currentPrice) {
-        alert(`Para ordens de VENDA (SHORT) a limite, o preço limite ($${limitPrice}) deve ser maior ou igual ao preço atual ($${currentPrice}).`);
+        setErrorMsg(`Para ordens de VENDA (SHORT) a limite, o preço limite ($${limitPrice}) deve ser maior ou igual ao preço atual ($${currentPrice}).`);
         return;
       }
     }
@@ -130,22 +134,22 @@ export const NewTradeModal: React.FC<NewTradeModalProps> = ({
     const refPrice = orderType === 'LIMIT' ? limitPrice : currentPrice;
     if (enableTp) {
       if (direction === 'LONG' && tpPrice <= refPrice) {
-        alert('Em ordens de COMPRA (LONG), o Take-Profit (alvo) deve ser maior que o preço de entrada.');
+        setErrorMsg('Em ordens de COMPRA (LONG), o Take-Profit (alvo) deve ser maior que o preço de entrada.');
         return;
       }
       if (direction === 'SHORT' && tpPrice >= refPrice) {
-        alert('Em ordens de VENDA (SHORT), o Take-Profit (alvo) deve ser menor que o preço de entrada.');
+        setErrorMsg('Em ordens de VENDA (SHORT), o Take-Profit (alvo) deve ser menor que o preço de entrada.');
         return;
       }
     }
 
     if (enableSl) {
       if (direction === 'LONG' && slPrice >= refPrice) {
-        alert('Em ordens de COMPRA (LONG), o Stop-Loss deve ser menor que o preço de entrada.');
+        setErrorMsg('Em ordens de COMPRA (LONG), o Stop-Loss deve ser menor que o preço de entrada.');
         return;
       }
       if (direction === 'SHORT' && slPrice <= refPrice) {
-        alert('Em ordens de VENDA (SHORT), o Stop-Loss deve ser maior que o preço de entrada.');
+        setErrorMsg('Em ordens de VENDA (SHORT), o Stop-Loss deve ser maior que o preço de entrada.');
         return;
       }
     }
@@ -466,6 +470,14 @@ export const NewTradeModal: React.FC<NewTradeModalProps> = ({
               <span className="text-emerald-400">${totalRequiredBalance.toFixed(2)} USDT</span>
             </div>
           </div>
+
+          {/* Banner de Erro Inline */}
+          {errorMsg && (
+            <div className="bg-rose-500/15 border border-rose-500/40 rounded-xl p-3 text-xs text-rose-300 flex items-start gap-2">
+              <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              <span>{errorMsg}</span>
+            </div>
+          )}
 
           {/* Aviso Legal */}
           <div className="flex items-center gap-2 text-[11px] text-slate-400">
