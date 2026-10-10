@@ -10,6 +10,8 @@ export interface ScanInfo {
   scannedPairs: number;
   universeSource: string | null;
   universeCount: number;
+  exchanges?: string[];
+  marketMode?: 'spot' | 'futures';
   skipped: string[];
   running: boolean;
 }
@@ -21,6 +23,8 @@ interface SignalsViewProps {
   onOpenTradeModal: (asset: CryptoAsset) => void;
   onSelectCoinBySymbol: (symbol: string) => void;
 }
+
+const PERIOD_MS = { '24h': 24 * 3600e3, '7d': 7 * 24 * 3600e3, '30d': 30 * 24 * 3600e3 } as const;
 
 export const SignalsView: React.FC<SignalsViewProps> = ({
   scanInfo,
@@ -52,13 +56,17 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
   ];
 
   const filteredSignals = useMemo(() => {
+    const now = Date.now();
     return signals.filter((s) => {
       const matchCoin = selectedCoin === 'ALL' || s.baseAsset === selectedCoin;
       const matchStrategy = selectedStrategy === 'ALL' || s.strategy === selectedStrategy;
       const matchStatus = selectedStatus === 'ALL' || s.status === selectedStatus;
-      return matchCoin && matchStrategy && matchStatus;
+      // Sinais reais têm createdAt; sinais de demonstração não têm data e ficam sempre visíveis.
+      const createdAt = (s as TechnicalSignal & { createdAt?: number }).createdAt;
+      const matchPeriod = createdAt === undefined || now - createdAt <= PERIOD_MS[selectedPeriod];
+      return matchCoin && matchStrategy && matchStatus && matchPeriod;
     });
-  }, [signals, selectedCoin, selectedStrategy, selectedStatus]);
+  }, [signals, selectedCoin, selectedStrategy, selectedStatus, selectedPeriod]);
 
   const getStatusBadge = (status: SignalStatus) => {
     switch (status) {
@@ -83,15 +91,22 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
         {scanInfo && scanInfo.lastScanAt && !scanInfo.lastError ? (
           <span>
             <span className="text-emerald-400 font-semibold">Scanner ativo</span> — {scanInfo.universeCount} moedas do top 100
-            ({scanInfo.universeSource === 'COINMARKETCAP' ? 'CoinMarketCap' : 'CoinGecko'}), {scanInfo.scannedPairs} análises na última varredura
+            ({scanInfo.universeSource === 'COINMARKETCAP' ? 'CoinMarketCap' : 'CoinGecko'}) listadas em {(scanInfo.exchanges ?? ['binance']).map((e) => (e === 'bybit' ? 'Bybit' : 'Binance')).join(' e ')}, {scanInfo.scannedPairs} análises na última varredura
             ({new Date(scanInfo.lastScanAt).toLocaleTimeString('pt-BR')}).
-            {scanInfo.skipped.length > 0 && ` Sem par USDT na Binance: ${scanInfo.skipped.join(', ')}.`}
           </span>
         ) : (
           <span>
             <span className="text-amber-300 font-semibold">Modo demonstração</span> — exibindo sinais de exemplo.{' '}
             {scanInfo?.running ? 'Primeira varredura em andamento…' : scanInfo?.lastError ?? 'Servidor/scanner indisponível.'}
           </span>
+        )}
+        {scanInfo && !scanInfo.lastError && scanInfo.skipped.length > 0 && (
+          <details className="mt-1.5">
+            <summary className="cursor-pointer text-slate-500">
+              {scanInfo.skipped.length} do top 100 ignoradas (sem par USDT em alguma corretora)
+            </summary>
+            <p className="mt-1 text-[10px] text-slate-500 leading-relaxed">{scanInfo.skipped.join(', ')}</p>
+          </details>
         )}
       </div>
 
@@ -223,7 +238,7 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
                       }`}
                     >
                       {isLong ? <ArrowUpRight className="w-3.5 h-3.5" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
-                      {isLong ? 'COMPRA' : 'VENDA'}
+                      {isLong ? 'COMPRA' : (signal as TechnicalSignal & { spotExit?: boolean }).spotExit ? 'VENDA · SAIR' : 'VENDA'}
                     </span>
 
                     <button

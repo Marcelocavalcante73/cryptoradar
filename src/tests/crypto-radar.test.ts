@@ -38,6 +38,9 @@ import {
 } from '../services/telegramService';
 
 import { calculateAllIndicators, calculateATR } from '../services/indicators';
+import { runBacktest, computeStats, BacktestTrade } from '../services/backtest';
+import { buildUniverse } from '../../server/universe';
+import { formatTelegramAlert } from '../../server/scanner';
 import { evaluateSignal, scoreCandles, MIN_SCORE } from '../services/signalEngine';
 import { StorageService, INITIAL_PAPER_ACCOUNT } from '../services/storageService';
 import { CandleData, CryptoAsset, PaperAccount } from '../types/crypto';
@@ -484,6 +487,110 @@ console.log(`    (sinais: alta=${upSignals.length}, baixa=${downSignals.length},
 assert(flatSignals.length <= Math.max(upSignals.length, downSignals.length), 'Mercado lateral gera no máximo tantos sinais quanto mercado em tendência');
 const again = scan(upCandles).find((x) => x.direction === 'LONG');
 assert(again?.id === buy.id, 'ID do sinal é determinístico (dedupe por candle)');
+
+// ============================================================================
+// 7. BACKTEST (sem look-ahead, custos, stop prioritário, estatísticas)
+// ============================================================================
+console.log('\n--- 7. Backtest ---');
+
+const btRaw = ohlc(noisySeries(100, 0.0015, 0.02, 600));
+const bt = runBacktest(btRaw, 'TESTUSDT', 'TEST', '1h');
+assert(bt.trades.length > 3, 'Backtest gera operações em série longa', `trades=${bt.trades.length}`);
+assert(bt.trades.every((t) => t.entryPrice === btRaw[t.entryIndex].open), 'Entrada sempre na ABERTURA da vela seguinte ao sinal (sem look-ahead)');
+assert(bt.trades.every((t, k) => k === 0 || t.entryIndex > bt.trades[k - 1].exitIndex), 'Operações não se sobrepõem');
+assert(bt.trades.every((t) => Math.abs((t.grossPct - t.netPct) - 0.3) < 1e-9), 'Custos de 0,3% (taxa+derrapagem, 2 lados) descontados em cada operação');
+assert(bt.trades.filter((t) => t.exit === 'STOP').every((t) => t.netPct < 0), 'Toda saída por stop resulta em prejuízo líquido');
+assert(bt.trades.filter((t) => t.exit === 'TARGET').every((t) => t.grossPct > 0), 'Toda saída por alvo tem retorno bruto positivo');
+
+// Prioridade do stop: vela de entrada com range enorme (toca stop e alvo) => STOP
+const first = bt.trades[0];
+const tampered = btRaw.map((c) => ({ ...c }));
+tampered[first.entryIndex].high = first.entryPrice * 1.5;
+tampered[first.entryIndex].low = first.entryPrice * 0.5;
+const bt2 = runBacktest(tampered, 'TESTUSDT', 'TEST', '1h');
+const first2 = bt2.trades[0];
+assert(first2.entryIndex === first.entryIndex && first2.exit === 'STOP' && first2.exitIndex === first.entryIndex,
+  'Stop e alvo na mesma vela => considera STOP (pior caso)');
+
+const btDown = runBacktest(ohlc(noisySeries(200, -0.0015, 0.02, 600)), 'TESTUSDT', 'TEST', '1h');
+const btDownLong = runBacktest(ohlc(noisySeries(200, -0.0015, 0.02, 600)), 'TESTUSDT', 'TEST', '1h', { longOnly: true });
+assert(btDown.trades.some((t) => t.direction === 'SHORT'), 'Backtest padrão inclui vendas a descoberto em mercado de baixa');
+assert(btDownLong.trades.every((t) => t.direction === 'LONG'), 'Modo spot (longOnly) não gera nenhuma operação de venda a descoberto');
+assert(runBacktest(btRaw.slice(0, 40), 'TESTUSDT', 'TEST', '1h').trades.length === 0, 'Histórico curto => nenhuma operação');
+
+// Estatísticas com valores calculados à mão
+const mk = (netPct: number, exit: BacktestTrade['exit'], dir: 'LONG' | 'SHORT' = 'LONG'): BacktestTrade => ({
+  symbol: 'X', timeframe: '1h', direction: dir, score: 70, entryIndex: 0, exitIndex: 1, entryPrice: 1, exitPrice: 1,
+  exit, grossPct: netPct, netPct, rMultiple: netPct / 2
+});
+const st = computeStats([mk(3, 'TARGET'), mk(-2, 'STOP'), mk(-2, 'STOP', 'SHORT'), mk(3, 'TARGET')]);
+assert(st.trades === 4 && st.wins === 2 && st.losses === 2 && st.winRate === 50, 'Contagem de acertos e taxa de acerto');
+assert(Math.abs(st.profitFactor! - 1.5) < 1e-9, 'Fator de lucro = ganhos 6 / perdas 4 = 1,5');
+assert(Math.abs(st.avgNetPct - 0.5) < 1e-9 && st.totalNetPct === 2, 'Expectativa 0,5% por operação e soma 2%');
+assert(st.maxDrawdownPct === 4, 'Drawdown máximo sobre a curva de retornos (pico 3, vale -1 = 4)');
+assert(st.longTrades === 3 && st.shortTrades === 1 && st.targetExits === 2 && st.stopExits === 2, 'Contagem por direção e por tipo de saída');
+assert(computeStats([mk(2, 'TARGET')]).profitFactor === null, 'Sem perdas => fator de lucro indefinido (null)');
+assert(computeStats([]).trades === 0 && computeStats([]).winRate === 0, 'Estatísticas vazias não quebram');
+
+// ============================================================================
+// 8. UNIVERSO (TOP 100 ∩ BINANCE ∩ BYBIT) E MODO SPOT
+// ============================================================================
+console.log('\n--- 8. Universo e modo spot ---');
+
+const realFetch = globalThis.fetch;
+const jsonRes = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+function mockFetch(bybitOk = true) {
+  globalThis.fetch = ((url: any) => {
+    const u = String(url);
+    if (u.includes('coingecko')) {
+      return jsonRes([
+        { symbol: 'btc', name: 'Bitcoin', market_cap_rank: 1, market_cap: 1e12 },
+        { symbol: 'usdt', name: 'Tether', market_cap_rank: 2, market_cap: 1e11 },
+        { symbol: 'eth', name: 'Ethereum', market_cap_rank: 3, market_cap: 4e11 },
+        { symbol: 'kas', name: 'Kaspa', market_cap_rank: 4, market_cap: 3e9 },   // só Binance
+        { symbol: 'leo', name: 'LEO', market_cap_rank: 5, market_cap: 8e9 },     // nenhuma
+        { symbol: 'xyz', name: 'Xyz', market_cap_rank: 6, market_cap: 1e9 }      // só Bybit
+      ]);
+    }
+    if (u.includes('/api/v3/ticker/price')) return jsonRes([{ symbol: 'BTCUSDT', price: '1' }, { symbol: 'ETHUSDT', price: '1' }, { symbol: 'KASUSDT', price: '1' }]);
+    if (u.includes('bybit.com')) {
+      return bybitOk
+        ? jsonRes({ retCode: 0, result: { list: [{ symbol: 'BTCUSDT' }, { symbol: 'ETHUSDT' }, { symbol: 'XYZUSDT' }] } })
+        : Promise.resolve(new Response('blocked', { status: 403 }));
+    }
+    return Promise.reject(new Error('url inesperada: ' + u));
+  }) as typeof fetch;
+}
+
+delete process.env.CMC_API_KEY;
+delete process.env.EXCHANGES;
+mockFetch();
+const uni = await buildUniverse();
+assert(uni.coins.map((c) => c.baseAsset).join(',') === 'BTC,ETH', 'Universo = interseção Binance ∩ Bybit (sem stablecoin)', uni.coins.map((c) => c.baseAsset).join(','));
+assert(uni.skipped.includes('KAS [sem Bybit]'), 'Moeda só na Binance é ignorada e marcada "sem Bybit"');
+assert(uni.skipped.includes('XYZ [sem Binance]'), 'Moeda só na Bybit é ignorada e marcada "sem Binance"');
+assert(uni.skipped.includes('LEO [sem Binance e Bybit]'), 'Moeda em nenhuma corretora é ignorada');
+assert(!uni.coins.some((c) => c.baseAsset === 'USDT'), 'Stablecoin não entra no universo');
+assert(uni.exchanges.join(',') === 'binance,bybit', 'Universo declara as corretoras exigidas');
+
+mockFetch(false);
+let bybitFailed = false;
+try { await buildUniverse(); } catch { bybitFailed = true; }
+assert(bybitFailed, 'Bybit indisponível => falha explícita (não finge interseção só com Binance)');
+
+process.env.EXCHANGES = 'binance';
+mockFetch(false);
+const uniBinanceOnly = await buildUniverse();
+assert(uniBinanceOnly.coins.map((c) => c.baseAsset).join(',') === 'BTC,ETH,KAS', 'EXCHANGES=binance dispensa a Bybit');
+delete process.env.EXCHANGES;
+globalThis.fetch = realFetch;
+
+if (sell) {
+  const spotMsg = formatTelegramAlert(sell, 'spot');
+  assert(spotMsg.includes('sair da posição') && !spotMsg.includes('Stop:'), 'Alerta de VENDA em spot: "sair da posição", sem stop/alvo de short');
+  assert(formatTelegramAlert(sell, 'futures').includes('short'), 'Alerta de VENDA em futuros: indica short');
+}
+if (buy) assert(formatTelegramAlert(buy, 'spot').includes('Stop:'), 'Alerta de COMPRA traz entrada, alvo e stop');
 
 console.log('\n========================================================');
 console.log(`TOTAL DE TESTES EXECUTADOS: ${totalTests}`);

@@ -120,6 +120,8 @@ export default function App() {
           scannedPairs: j.scannedPairs,
           universeSource: j.universe?.source ?? null,
           universeCount: j.universe?.count ?? 0,
+          exchanges: j.universe?.exchanges,
+          marketMode: j.marketMode,
           skipped: j.universe?.skipped ?? [],
           running: j.running
         });

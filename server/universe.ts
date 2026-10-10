@@ -16,11 +16,36 @@ export interface UniverseCoin {
   marketCap: number;
 }
 
+export type ExchangeName = 'binance' | 'bybit';
+
 export interface Universe {
   source: 'COINMARKETCAP' | 'COINGECKO';
   fetchedAt: number;
+  exchanges: ExchangeName[]; // corretoras que precisam listar o par (interseção)
   coins: UniverseCoin[];
-  skipped: string[]; // top 100 que não têm par USDT na Binance
+  skipped: string[]; // top 100 sem par USDT em alguma das corretoras exigidas, ex: "KAS [sem Bybit]"
+}
+
+/** Corretoras exigidas, via EXCHANGES (padrão: binance,bybit). O par precisa existir em TODAS. */
+export function requiredExchanges(): ExchangeName[] {
+  const list = (process.env.EXCHANGES || 'binance,bybit')
+    .split(',').map((x) => x.trim().toLowerCase())
+    .filter((x): x is ExchangeName => x === 'binance' || x === 'bybit');
+  return list.length > 0 ? Array.from(new Set(list)) : ['binance', 'bybit'];
+}
+
+/** Pares spot negociáveis na Bybit (API pública v5). */
+export async function fetchBybitSpotSymbols(): Promise<Set<string>> {
+  const r = await fetch('https://api.bybit.com/v5/market/tickers?category=spot', {
+    headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(10000)
+  });
+  if (!r.ok) throw new Error(`Bybit HTTP ${r.status}`);
+  const j: any = await r.json();
+  if (j?.retCode !== 0 || !Array.isArray(j?.result?.list)) {
+    throw new Error(`Bybit retornou resposta inválida (retCode ${j?.retCode ?? '?'})`);
+  }
+  return new Set<string>(j.result.list.map((t: any) => String(t.symbol)));
 }
 
 const BINANCE_HOSTS = ['https://api.binance.com', 'https://data-api.binance.vision'];
@@ -76,16 +101,25 @@ async function fetchTop100(): Promise<{ source: Universe['source']; items: { ran
 }
 
 export async function buildUniverse(): Promise<Universe> {
-  const [top, prices] = await Promise.all([fetchTop100(), binanceGet('/api/v3/ticker/price')]);
-  const pairs = new Set<string>((prices as any[]).map((p) => p.symbol));
+  const exchanges = requiredExchanges();
+  const [top, binancePrices, bybitPairs] = await Promise.all([
+    fetchTop100(),
+    binanceGet('/api/v3/ticker/price'), // sempre necessário: fonte dos candles
+    exchanges.includes('bybit') ? fetchBybitSpotSymbols() : Promise.resolve(null)
+  ]);
+  const binancePairs = new Set<string>((binancePrices as any[]).map((p) => p.symbol));
 
   const coins: UniverseCoin[] = [];
   const skipped: string[] = [];
   for (const it of top.items) {
     if (STABLECOINS.has(it.sym)) continue;
     const symbol = `${it.sym}USDT`;
-    if (pairs.has(symbol)) coins.push({ rank: it.rank, baseAsset: it.sym, name: it.name, symbol, marketCap: it.mcap });
-    else skipped.push(it.sym);
+    const missing: string[] = [];
+    // A Binance é sempre consultada (candles); só exige o par se estiver entre as corretoras exigidas.
+    if (!binancePairs.has(symbol)) missing.push('Binance'); // candles vêm da Binance, então o par precisa existir nela
+    if (bybitPairs && !bybitPairs.has(symbol)) missing.push('Bybit');
+    if (missing.length === 0) coins.push({ rank: it.rank, baseAsset: it.sym, name: it.name, symbol, marketCap: it.mcap });
+    else skipped.push(`${it.sym} [sem ${missing.join(' e ')}]`);
   }
-  return { source: top.source, fetchedAt: Date.now(), coins, skipped };
+  return { source: top.source, fetchedAt: Date.now(), exchanges, coins, skipped };
 }
