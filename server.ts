@@ -3,6 +3,7 @@ import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { getScanState, runScan, startScanner } from './server/scanner';
 
 dotenv.config();
 
@@ -141,6 +142,23 @@ app.post('/api/telegram/test', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/signals — sinais gerados pelo scanner (top 100 por market cap) e estado da varredura.
+ */
+app.get('/api/signals', (_req: Request, res: Response) => {
+  res.json(getScanState());
+});
+
+/**
+ * POST /api/scan — força uma varredura imediata (limitada por rate limit).
+ */
+app.post('/api/scan', (req: Request, res: Response) => {
+  const ip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1';
+  if (isRateLimited(ip)) return res.status(429).json({ error: 'Limite de requisições excedido.' });
+  runScan();
+  res.status(202).json({ started: true });
+});
+
+/**
  * Inicialização do Vite middleware em desenvolvimento ou arquivos estáticos em produção.
  */
 async function startServer() {
@@ -159,6 +177,8 @@ async function startServer() {
       res.sendFile(path.resolve(distPath, 'index.html'));
     });
   }
+
+  if (process.env.SCANNER_ENABLED !== 'false') startScanner(Number(process.env.SCAN_INTERVAL_MINUTES) || 5);
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`CryptoRadar fullstack server rodando na porta ${PORT} [${isProduction ? 'PROD' : 'DEV'}]`);

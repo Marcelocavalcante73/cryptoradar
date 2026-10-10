@@ -4,7 +4,18 @@ import { TechnicalSignal, SignalStrategy, SignalStatus, CryptoAsset } from '../.
 import { DisclaimerBanner } from '../common/DisclaimerBanner';
 import { Badge } from '../common/Badge';
 
+export interface ScanInfo {
+  lastScanAt: number | null;
+  lastError: string | null;
+  scannedPairs: number;
+  universeSource: string | null;
+  universeCount: number;
+  skipped: string[];
+  running: boolean;
+}
+
 interface SignalsViewProps {
+  scanInfo?: ScanInfo | null;
   signals: TechnicalSignal[];
   assets: CryptoAsset[];
   onOpenTradeModal: (asset: CryptoAsset) => void;
@@ -12,6 +23,7 @@ interface SignalsViewProps {
 }
 
 export const SignalsView: React.FC<SignalsViewProps> = ({
+  scanInfo,
   signals,
   assets,
   onOpenTradeModal,
@@ -65,6 +77,23 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
     <div className="space-y-3 pb-24">
       {/* Disclaimer Regulatório e de Risco */}
       <DisclaimerBanner type="signals" />
+
+      {/* Estado do scanner */}
+      <div className="bg-[#121722] border border-slate-800 rounded-2xl p-3 text-[11px] text-slate-400">
+        {scanInfo && scanInfo.lastScanAt && !scanInfo.lastError ? (
+          <span>
+            <span className="text-emerald-400 font-semibold">Scanner ativo</span> — {scanInfo.universeCount} moedas do top 100
+            ({scanInfo.universeSource === 'COINMARKETCAP' ? 'CoinMarketCap' : 'CoinGecko'}), {scanInfo.scannedPairs} análises na última varredura
+            ({new Date(scanInfo.lastScanAt).toLocaleTimeString('pt-BR')}).
+            {scanInfo.skipped.length > 0 && ` Sem par USDT na Binance: ${scanInfo.skipped.join(', ')}.`}
+          </span>
+        ) : (
+          <span>
+            <span className="text-amber-300 font-semibold">Modo demonstração</span> — exibindo sinais de exemplo.{' '}
+            {scanInfo?.running ? 'Primeira varredura em andamento…' : scanInfo?.lastError ?? 'Servidor/scanner indisponível.'}
+          </span>
+        )}
+      </div>
 
       {/* Barra de Filtros por Moeda, Estratégia e Status */}
       <div className="bg-[#121722] border border-slate-800 rounded-2xl p-3 space-y-2.5">
@@ -160,7 +189,23 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
         ) : (
           filteredSignals.map((signal) => {
             const isLong = signal.direction === 'LONG';
-            const matchedAsset = assets.find((a) => a.symbol === signal.symbol) || assets[0];
+            const matchedAsset: CryptoAsset = assets.find((a) => a.symbol === signal.symbol) || {
+              id: signal.symbol.toLowerCase(),
+              symbol: signal.symbol,
+              baseAsset: signal.baseAsset,
+              quoteAsset: 'USDT',
+              name: signal.baseAsset,
+              price: signal.entryPrice,
+              change24h: 0,
+              high24h: signal.entryPrice,
+              low24h: signal.entryPrice,
+              volume24h: 0,
+              exchanges: ['binance'],
+              sparkline: [signal.entryPrice],
+              lastUpdated: signal.timestamp,
+              isDemoData: signal.isDemo
+            };
+            const score = (signal as TechnicalSignal & { score?: number }).score;
 
             return (
               <div
@@ -178,7 +223,7 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
                       }`}
                     >
                       {isLong ? <ArrowUpRight className="w-3.5 h-3.5" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
-                      {signal.direction}
+                      {isLong ? 'COMPRA' : 'VENDA'}
                     </span>
 
                     <button
@@ -192,9 +237,17 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
                       {signal.timeframe}
                     </span>
 
-                    <span className="text-[9px] bg-amber-500/10 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded font-mono">
-                      DEMO
-                    </span>
+                    {signal.isDemo ? (
+                      <span className="text-[9px] bg-amber-500/10 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded font-mono">
+                        DEMO
+                      </span>
+                    ) : (
+                      score !== undefined && (
+                        <span className="text-[9px] bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 px-1.5 py-0.5 rounded font-mono">
+                          {score > 0 ? '+' : ''}{score}
+                        </span>
+                      )
+                    )}
                   </div>
 
                   {getStatusBadge(signal.status)}

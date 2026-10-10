@@ -634,3 +634,26 @@ export function calculateTechnicalDiagnosis(candles: CandleData[]): TechnicalDia
     }
   };
 }
+
+/**
+ * ATR (Average True Range) com suavização de Wilder.
+ * Retorna o ATR da última vela, ou undefined se não houver velas suficientes (period + 1).
+ */
+export function calculateATR(candles: CandleData[], period: number = 14): number | undefined {
+  if (candles.length < period + 1) return undefined;
+
+  const trueRange = (i: number): number => {
+    const c = candles[i];
+    const prevClose = candles[i - 1].close;
+    return Math.max(c.high - c.low, Math.abs(c.high - prevClose), Math.abs(c.low - prevClose));
+  };
+
+  let atr = 0;
+  for (let i = 1; i <= period; i++) atr += trueRange(i);
+  atr /= period;
+
+  for (let i = period + 1; i < candles.length; i++) {
+    atr = (atr * (period - 1) + trueRange(i)) / period;
+  }
+  return atr;
+}

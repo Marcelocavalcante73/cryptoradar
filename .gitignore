@@ -7,3 +7,4 @@ coverage/
 bun.lock
 .env*
 !.env.example
+data/

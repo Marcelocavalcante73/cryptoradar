@@ -21,7 +21,7 @@ import { DashboardView } from './components/dashboard/DashboardView';
 import { MarketView } from './components/market/MarketView';
 import { CoinDetailsView } from './components/details/CoinDetailsView';
 import { PaperTradingView } from './components/paperTrading/PaperTradingView';
-import { SignalsView } from './components/signals/SignalsView';
+import { SignalsView, ScanInfo } from './components/signals/SignalsView';
 import { SettingsView } from './components/settings/SettingsView';
 
 // Modais
@@ -30,7 +30,8 @@ import { NewTradeModal } from './components/paperTrading/NewTradeModal';
 export default function App() {
   const [activeTab, setActiveTab] = useState<ScreenTab>('dashboard');
   const [assets, setAssets] = useState<CryptoAsset[]>(INITIAL_ASSETS);
-  const [signals] = useState<TechnicalSignal[]>(INITIAL_SIGNALS);
+  const [signals, setSignals] = useState<TechnicalSignal[]>(INITIAL_SIGNALS);
+  const [scanInfo, setScanInfo] = useState<ScanInfo | null>(null);
   const [selectedCoin, setSelectedCoin] = useState<CryptoAsset>(INITIAL_ASSETS[0]);
   const [tradeModalOpen, setTradeModalOpen] = useState(false);
   const [tradeModalCoin, setTradeModalCoin] = useState<CryptoAsset>(INITIAL_ASSETS[0]);
@@ -103,6 +104,34 @@ export default function App() {
       clearInterval(timerId); // Limpa temporizador ao desmontar
     };
   }, [refreshPrices, settings.refreshIntervalSeconds]);
+
+  // Sinais reais do scanner do servidor (top 100). Sem servidor/dados, mantém a demonstração.
+  useEffect(() => {
+    let cancelled = false;
+    const loadSignals = async () => {
+      try {
+        const r = await fetch('/api/signals', { signal: AbortSignal.timeout(5000) });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const j = await r.json();
+        if (cancelled) return;
+        setScanInfo({
+          lastScanAt: j.lastScanAt,
+          lastError: j.lastError,
+          scannedPairs: j.scannedPairs,
+          universeSource: j.universe?.source ?? null,
+          universeCount: j.universe?.count ?? 0,
+          skipped: j.universe?.skipped ?? [],
+          running: j.running
+        });
+        if (j.lastScanAt && Array.isArray(j.signals) && !j.lastError) setSignals(j.signals);
+      } catch {
+        if (!cancelled) setScanInfo(null);
+      }
+    };
+    loadSignals();
+    const id = setInterval(loadSignals, 60000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
 
   // Salva configurações
   const handleSaveSettings = (newSettings: AppSettings) => {
@@ -275,6 +304,7 @@ export default function App() {
 
           {activeTab === 'signals' && (
             <SignalsView
+              scanInfo={scanInfo}
               signals={signals}
               assets={assets}
               onOpenTradeModal={handleOpenTradeModal}

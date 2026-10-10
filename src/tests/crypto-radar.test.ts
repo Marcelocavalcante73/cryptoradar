@@ -37,6 +37,8 @@ import {
   getTelegramServerStatus
 } from '../services/telegramService';
 
+import { calculateAllIndicators, calculateATR } from '../services/indicators';
+import { evaluateSignal, scoreCandles, MIN_SCORE } from '../services/signalEngine';
 import { StorageService, INITIAL_PAPER_ACCOUNT } from '../services/storageService';
 import { CandleData, CryptoAsset, PaperAccount } from '../types/crypto';
 
@@ -418,6 +420,70 @@ assert(!validateTelegramDestination('@exemplo_bot').isValid, 'Identificador de e
 const exchangeStatuses = await apiService.checkExchangeHealth();
 assert(exchangeStatuses.bybit.isImplemented === false, 'Conector Bybit declara explicitamente isImplemented = false');
 assert(exchangeStatuses.bybit.status === 'NOT_IMPLEMENTED', 'Status da Bybit é rigorosamente NOT_IMPLEMENTED');
+
+// ============================================================================
+// 6. MOTOR DE SINAIS (COMPRA/VENDA, ATR, CONFLUÊNCIA)
+// ============================================================================
+console.log('\n--- 6. Motor de Sinais ---');
+
+function ohlc(prices: number[], volume = 1000): CandleData[] {
+  return prices.map((p, i) => ({
+    time: String(i), timestamp: 1_700_000_000_000 + i * 3_600_000,
+    open: i === 0 ? p : prices[i - 1], high: Math.max(p, i === 0 ? p : prices[i - 1]) * 1.004,
+    low: Math.min(p, i === 0 ? p : prices[i - 1]) * 0.996, close: p, volume
+  }));
+}
+const ctx = { symbol: 'TESTUSDT', baseAsset: 'TEST', timeframe: '1h' };
+
+// Séries com ruído determinístico (LCG) para simular mercado realista
+function noisySeries(start: number, drift: number, noise: number, n = 120): number[] {
+  let seed = 42;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296 - 0.5; };
+  const out: number[] = [];
+  let p = start;
+  for (let i = 0; i < n; i++) { p *= 1 + drift + rnd() * noise; out.push(p); }
+  return out;
+}
+const upCandles = calculateAllIndicators(ohlc(noisySeries(100, 0.0015, 0.02)));
+const downCandles = calculateAllIndicators(ohlc(noisySeries(200, -0.0015, 0.02)));
+const exhaustedCandles = calculateAllIndicators(ohlc(Array.from({ length: 120 }, (_, i) => 100 * Math.pow(1.006, i))));
+const flatCandles = calculateAllIndicators(ohlc(noisySeries(100, 0, 0.02)));
+
+assert(calculateATR(ohlc([100, 101])) === undefined, 'ATR retorna undefined sem velas suficientes');
+const atrFlat = calculateATR(ohlc(new Array(30).fill(100)));
+assert(atrFlat !== undefined && Math.abs(atrFlat - 0.8) < 0.01, 'ATR de série plana = amplitude high-low (0.8%)', `ATR=${atrFlat}`);
+
+assert(scoreCandles(upCandles.slice(0, 30)) === null, 'Poucas velas => sem pontuação (aquecimento)');
+
+function scan(candles: CandleData[]) {
+  const out: NonNullable<ReturnType<typeof evaluateSignal>>[] = [];
+  for (let end = 70; end <= candles.length; end++) {
+    const sig = evaluateSignal(candles.slice(0, end), ctx);
+    if (sig) out.push(sig);
+  }
+  return out;
+}
+const upSignals = scan(upCandles);
+const downSignals = scan(downCandles);
+const buys = upSignals.filter((x) => x.direction === 'LONG');
+const sells = downSignals.filter((x) => x.direction === 'SHORT');
+assert(buys.length > 0, 'Tendência de alta gera sinais de COMPRA', `compras=${buys.length}`);
+assert(buys.length > upSignals.length - buys.length, 'Em alta, compras superam vendas', `${buys.length}/${upSignals.length}`);
+assert(sells.length > 0, 'Tendência de baixa gera sinais de VENDA', `vendas=${sells.length}`);
+assert(sells.length > downSignals.length - sells.length, 'Em baixa, vendas superam compras', `${sells.length}/${downSignals.length}`);
+const buy = buys[0];
+const sell = sells[0];
+assert(buy.score >= MIN_SCORE && sell.score <= -MIN_SCORE, 'Sinais respeitam a pontuação mínima');
+assert(buy.stopLossPrice < buy.entryPrice && buy.targetPrice > buy.entryPrice, 'COMPRA: stop abaixo e alvo acima da entrada');
+assert(sell.stopLossPrice > sell.entryPrice && sell.targetPrice < sell.entryPrice, 'VENDA: stop acima e alvo abaixo da entrada');
+assert(buy.riskRewardRatio === '1:2.0', 'Risco:retorno 1:2 via ATR');
+assert(buy.isDemo === false, 'Sinal do motor não é marcado como demo');
+assert(evaluateSignal(exhaustedCandles, ctx)?.direction !== 'LONG', 'Alta exausta (RSI ~100) não gera compra (não persegue topo)');
+const flatSignals = scan(flatCandles);
+console.log(`    (sinais: alta=${upSignals.length}, baixa=${downSignals.length}, lateral=${flatSignals.length} de ${upCandles.length - 69} janelas)`);
+assert(flatSignals.length <= Math.max(upSignals.length, downSignals.length), 'Mercado lateral gera no máximo tantos sinais quanto mercado em tendência');
+const again = scan(upCandles).find((x) => x.direction === 'LONG');
+assert(again?.id === buy.id, 'ID do sinal é determinístico (dedupe por candle)');
 
 console.log('\n========================================================');
 console.log(`TOTAL DE TESTES EXECUTADOS: ${totalTests}`);

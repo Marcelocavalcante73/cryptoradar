@@ -72,7 +72,7 @@ export interface TechnicalSignal {
   technicalReason: string;
   indicatorsTriggered: string[];
   timestamp: string;
-  isDemo: true; // Sempre DEMO nesta versão
+  isDemo: boolean; // true = sinal de demonstração (mock); false = gerado pelo motor com dados reais
   disclaimer: string;
 }
 
