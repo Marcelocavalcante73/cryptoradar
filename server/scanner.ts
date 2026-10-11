@@ -36,7 +36,10 @@ export interface ScanState {
   lastError: string | null;
   scannedPairs: number;
   failedPairs: number;
-  universe: Pick<Universe, 'source' | 'fetchedAt' | 'skipped' | 'exchanges'> & { count: number } | null;
+  universe: Pick<Universe, 'source' | 'fetchedAt' | 'skipped' | 'exchanges'> & {
+    count: number;
+    coins: { rank: number; baseAsset: string; name: string; symbol: string }[];
+  } | null;
   signals: StoredSignal[];
 }
 
@@ -159,6 +162,7 @@ export async function runScan(): Promise<void> {
       fetchedAt: universe.fetchedAt,
       skipped: universe.skipped,
       exchanges: universe.exchanges,
+      coins: universe.coins.map(({ rank, baseAsset, name, symbol }) => ({ rank, baseAsset, name, symbol })),
       count: universe.coins.length
     };
 

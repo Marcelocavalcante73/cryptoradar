@@ -206,6 +206,52 @@ export class CryptoApiService implements MarketDataProvider {
     }
   }
 
+  /**
+   * Cotações 24h de símbolos arbitrários (ex: moedas de sinais e de posições simuladas fora da lista fixa).
+   * Falhas retornam lista vazia; nunca inventa preço.
+   */
+  async fetchAssetsBySymbols(symbols: string[]): Promise<CryptoAsset[]> {
+    const unique = Array.from(new Set(symbols.filter((x) => /^[A-Z0-9]{3,20}USDT$/.test(x))));
+    const out: CryptoAsset[] = [];
+    for (let i = 0; i < unique.length; i += 50) {
+      const chunk = encodeURIComponent(JSON.stringify(unique.slice(i, i + 50)));
+      for (const host of ['https://api.binance.com', 'https://data-api.binance.vision']) {
+        try {
+          const r = await fetch(`${host}/api/v3/ticker/24hr?symbols=${chunk}`, {
+            headers: { Accept: 'application/json' },
+            signal: AbortSignal.timeout(5000)
+          });
+          if (!r.ok) continue;
+          const raw = await r.json();
+          if (!Array.isArray(raw)) continue;
+          for (const t of raw) {
+            const price = parseFloat(t.lastPrice);
+            if (!t?.symbol || !Number.isFinite(price) || price <= 0) continue;
+            const base = String(t.symbol).replace(/USDT$/, '');
+            out.push({
+              id: String(t.symbol).toLowerCase(),
+              symbol: t.symbol,
+              baseAsset: base,
+              quoteAsset: 'USDT',
+              name: base,
+              price,
+              change24h: parseFloat(t.priceChangePercent) || 0,
+              high24h: parseFloat(t.highPrice) || price,
+              low24h: parseFloat(t.lowPrice) || price,
+              volume24h: parseFloat(t.quoteVolume) || 0,
+              exchanges: ['binance'],
+              sparkline: [price],
+              lastUpdated: new Date().toLocaleTimeString('pt-BR'),
+              isDemoData: false
+            });
+          }
+          break;
+        } catch { /* tenta o espelho */ }
+      }
+    }
+    return out;
+  }
+
   async fetchTickerBySymbol(symbol: string): Promise<CryptoAsset | null> {
     const list = await this.fetchTickers();
     return list.find((a) => a.symbol === symbol) || null;
