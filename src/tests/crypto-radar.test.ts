@@ -41,6 +41,7 @@ import { calculateAllIndicators, calculateATR } from '../services/indicators';
 import { runBacktest, computeStats, BacktestTrade } from '../services/backtest';
 import { buildUniverse } from '../../server/universe';
 import { formatTelegramAlert } from '../../server/scanner';
+import { computeSignalPerformance, signalResultR, PerfSignal } from '../services/signalPerformance';
 import { evaluateSignal, scoreCandles, MIN_SCORE } from '../services/signalEngine';
 import { StorageService, INITIAL_PAPER_ACCOUNT } from '../services/storageService';
 import { CandleData, CryptoAsset, PaperAccount } from '../types/crypto';
@@ -591,6 +592,42 @@ if (sell) {
   assert(formatTelegramAlert(sell, 'futures').includes('short'), 'Alerta de VENDA em futuros: indica short');
 }
 if (buy) assert(formatTelegramAlert(buy, 'spot').includes('Stop:'), 'Alerta de COMPRA traz entrada, alvo e stop');
+
+// ============================================================================
+// 9. DESEMPENHO DOS SINAIS ENCERRADOS
+// ============================================================================
+console.log('\n--- 9. Desempenho dos sinais ---');
+
+const mkSig = (o: Partial<PerfSignal>): PerfSignal => ({
+  id: 'x', symbol: 'AAAUSDT', baseAsset: 'AAA', direction: 'LONG', strategy: 'VOLUME_SPIKE', strategyName: 'x',
+  timeframe: '1h', entryPrice: 100, targetPrice: 106, stopLossPrice: 98, riskRewardRatio: '1:2.0', status: 'OPEN',
+  technicalReason: '', indicatorsTriggered: [], timestamp: '', isDemo: false, disclaimer: '', score: 65, ...o
+});
+const near = (a: number | null, b: number) => a !== null && Math.abs(a - b) < 1e-9;
+
+assert(near(signalResultR(mkSig({ status: 'TARGET_HIT' })), 2.85), 'Compra no alvo: (6% - 0,3%) / 2% = +2,85R');
+assert(near(signalResultR(mkSig({ status: 'STOP_HIT' })), -1.15), 'Compra no stop: (-2% - 0,3%) / 2% = -1,15R (custos pioram a perda)');
+assert(near(signalResultR(mkSig({ direction: 'SHORT', stopLossPrice: 102, targetPrice: 94, status: 'TARGET_HIT' })), 2.85), 'Venda no alvo: +2,85R');
+assert(near(signalResultR(mkSig({ status: 'EXPIRED', closePrice: 101 })), 0.35), 'Expirado usa o preço de saída: (1% - 0,3%) / 2% = +0,35R');
+assert(signalResultR(mkSig({ status: 'EXPIRED' })) === null, 'Expirado sem preço de saída não entra na média');
+assert(signalResultR(mkSig({ status: 'OPEN' })) === null, 'Sinal aberto não tem resultado');
+
+const perf = computeSignalPerformance([
+  mkSig({ status: 'TARGET_HIT', score: 75 }),
+  mkSig({ status: 'STOP_HIT', score: 62 }),
+  mkSig({ status: 'STOP_HIT', score: 85, timeframe: '4h' }),
+  mkSig({ status: 'OPEN' }),
+  mkSig({ status: 'TARGET_HIT', isDemo: true })
+]);
+assert(perf.total === 4 && perf.open === 1 && perf.closed === 3, 'Sinais de demonstração ficam fora da conta');
+assert(perf.targetHits === 1 && perf.stopHits === 2 && perf.expired === 0, 'Contagem de alvo/stop/expirado');
+assert(Math.abs(perf.overall.winRate - 100 / 3) < 1e-9, 'Taxa de acerto geral = 1 de 3');
+assert(near(perf.overall.totalR, 2.85 - 1.15 - 1.15), 'R total = 2,85 - 1,15 - 1,15 = +0,55R');
+assert(near(perf.overall.profitFactor, 2.85 / 2.3), 'Fator de lucro = 2,85 / 2,30');
+assert(perf.byTimeframe[1].resolved === 1 && perf.byTimeframe[0].resolved === 2, 'Separação por timeframe');
+assert(perf.byScore[0].resolved === 1 && perf.byScore[1].resolved === 1 && perf.byScore[2].resolved === 1, 'Separação por faixa de pontuação');
+assert(perf.reliable === false, 'Amostra pequena (<30) é marcada como não confiável');
+assert(computeSignalPerformance([]).total === 0 && computeSignalPerformance([]).overall.winRate === 0, 'Sem sinais não quebra');
 
 console.log('\n========================================================');
 console.log(`TOTAL DE TESTES EXECUTADOS: ${totalTests}`);

@@ -3,6 +3,7 @@ import { Radio, Filter, ArrowUpRight, ArrowDownRight, CheckCircle2, XCircle, Clo
 import { TechnicalSignal, SignalStrategy, SignalStatus, CryptoAsset } from '../../types/crypto';
 import { DisclaimerBanner } from '../common/DisclaimerBanner';
 import { Badge } from '../common/Badge';
+import { PerformancePanel } from './PerformancePanel';
 
 export interface ScanInfo {
   lastScanAt: number | null;
@@ -109,6 +110,9 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
           </details>
         )}
       </div>
+
+      {/* Desempenho dos sinais reais encerrados */}
+      <PerformancePanel signals={signals} />
 
       {/* Barra de Filtros por Moeda, Estratégia e Status */}
       <div className="bg-[#121722] border border-slate-800 rounded-2xl p-3 space-y-2.5">
