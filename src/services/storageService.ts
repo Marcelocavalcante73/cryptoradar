@@ -17,15 +17,15 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   exchange: {
     binanceEnabled: true,
-    binanceApiKeyPreview: 'vm38...91ad (Apenas Leitura)',
-    bybitEnabled: false,
-    bybitApiKeyPreview: 'Não conectado (Integração pública pendente)',
+    binanceApiKeyPreview: '',
+    bybitEnabled: true,
+    bybitApiKeyPreview: '',
     connectionMode: 'DIRECT_PUBLIC_API'
   },
   telegram: {
     enabled: false,
     botTokenPlaceholder: '',
-    chatIdPlaceholder: '@cryptoradar_alertas_me',
+    chatIdPlaceholder: '',
     notifyOnSignals: true,
     notifyOnPaperExecution: true
   }
@@ -158,7 +158,9 @@ export const StorageService = {
     }
   },
 
-  resetPaperAccount(initialAmount: number = 10000): PaperAccount {
+  /** Zera saldo e posições. O histórico de operações é preservado, a menos que `keepHistory` seja false. */
+  resetPaperAccount(initialAmount: number = 10000, keepHistory: boolean = false): PaperAccount {
+    const previousHistory = keepHistory ? StorageService.getPaperAccount().closedHistory || [] : [];
     const fresh: PaperAccount = {
       virtualBalance: initialAmount,
       initialBalance: initialAmount,
@@ -167,7 +169,7 @@ export const StorageService = {
       lossTrades: 0,
       totalFeesPaid: 0,
       positions: [],
-      closedHistory: []
+      closedHistory: previousHistory
     };
     StorageService.savePaperAccount(fresh);
     return fresh;

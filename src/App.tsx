@@ -1,114 +1,109 @@
 /**
- * CryptoRadar - Plataforma Mobile-First de Análise de Criptomoedas
- * Versão 1.0 (DEMO)
+ * CryptoRadar — sinais de compra e venda das 100 maiores criptomoedas, com carteira simulada.
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { CryptoAsset, TechnicalSignal, PaperAccount, AppSettings, PaperPosition } from './types/crypto';
+import { CryptoAsset, TechnicalSignal, PaperAccount, AppSettings } from './types/crypto';
 import { INITIAL_ASSETS, INITIAL_SIGNALS } from './services/mockData';
 import { StorageService } from './services/storageService';
 import { apiService } from './services/apiService';
-import { createTradeOrder, cancelPendingOrder, closeOpenPosition, evaluateTriggers } from './services/paperTradingService';
+import { createTradeOrder, closeOpenPosition, evaluateTriggers } from './services/paperTradingService';
 import { soundService } from './services/soundService';
 
-// Layout & Navegação
 import { Header } from './components/layout/Header';
 import { BottomNav, ScreenTab } from './components/layout/BottomNav';
-import { DisclaimerBanner } from './components/common/DisclaimerBanner';
-
-// Telas
-import { DashboardView } from './components/dashboard/DashboardView';
 import { MarketView } from './components/market/MarketView';
 import { CoinDetailsView } from './components/details/CoinDetailsView';
-import { PaperTradingView } from './components/paperTrading/PaperTradingView';
+import { WalletView } from './components/paperTrading/WalletView';
 import { SignalsView, ScanInfo } from './components/signals/SignalsView';
 import { SettingsView } from './components/settings/SettingsView';
-
-// Modais
-import { NewTradeModal } from './components/paperTrading/NewTradeModal';
+import { TradeSheet, TradeRequest } from './components/paperTrading/TradeSheet';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<ScreenTab>('dashboard');
+  const [activeTab, setActiveTab] = useState<ScreenTab>('signals');
   const [assets, setAssets] = useState<CryptoAsset[]>(INITIAL_ASSETS);
   const [signals, setSignals] = useState<TechnicalSignal[]>(INITIAL_SIGNALS);
   const [scanInfo, setScanInfo] = useState<ScanInfo | null>(null);
   const [selectedCoin, setSelectedCoin] = useState<CryptoAsset>(INITIAL_ASSETS[0]);
-  const [tradeModalOpen, setTradeModalOpen] = useState(false);
-  const [tradeModalCoin, setTradeModalCoin] = useState<CryptoAsset>(INITIAL_ASSETS[0]);
+  const [trade, setTrade] = useState<{ asset: CryptoAsset; signal?: TechnicalSignal } | null>(null);
 
-  // Conta simulada (Paper Trading) e Configurações salvas
   const [paperAccount, setPaperAccount] = useState<PaperAccount>(() => StorageService.getPaperAccount());
   const [settings, setSettings] = useState<AppSettings>(() => StorageService.getSettings());
 
-  // Estado de conexão e carregamento
   const [isFetching, setIsFetching] = useState(false);
   const [isLive, setIsLive] = useState(false);
-  const [isMobileFrame, setIsMobileFrame] = useState(false);
 
-  // Prevenção estrita de requisições concorrentes
+  // Refs com o estado mais recente, para uso dentro de callbacks assíncronos
   const isUpdatingRef = useRef(false);
+  const accountRef = useRef(paperAccount);
+  const signalsRef = useRef(signals);
+  const assetsRef = useRef(assets);
+  const scanInfoRef = useRef<ScanInfo | null>(null);
+  accountRef.current = paperAccount;
+  signalsRef.current = signals;
+  assetsRef.current = assets;
+  scanInfoRef.current = scanInfo;
 
-  // Salva conta de paper trading no localStorage quando alterada
-  const updatePaperAccount = useCallback((newAccount: PaperAccount) => {
-    setPaperAccount(newAccount);
-    StorageService.savePaperAccount(newAccount);
+  const commitAccount = useCallback((account: PaperAccount) => {
+    accountRef.current = account;
+    setPaperAccount(account);
+    StorageService.savePaperAccount(account);
   }, []);
 
-  // Consulta cotações da API pública (Binance ou snapshot) sem concorrência
+  // Preços: lista principal + moedas de sinais abertos e de posições simuladas
   const refreshPrices = useCallback(async () => {
     if (isUpdatingRef.current) return;
     isUpdatingRef.current = true;
     setIsFetching(true);
     try {
-      const data = await apiService.fetchTickers();
-      setAssets(data);
-      const anyLive = data.some((a) => !a.isDemoData);
-      setIsLive(anyLive);
+      const base = await apiService.fetchTickers();
+      const have = new Set(base.map((a) => a.symbol));
+      const extra = new Set<string>();
+      accountRef.current.positions.forEach((p) => !have.has(p.symbol) && extra.add(p.symbol));
+      scanInfoRef.current?.coins?.forEach((c) => !have.has(c.symbol) && extra.add(c.symbol));
+      signalsRef.current.forEach((s) => !s.isDemo && s.status === 'OPEN' && !have.has(s.symbol) && extra.add(s.symbol));
+      const extraAssets = extra.size ? await apiService.fetchAssetsBySymbols(Array.from(extra)) : [];
+      const data = [...base, ...extraAssets];
 
-      // Mantém a moeda selecionada sincronizada com o preço novo
+      setAssets(data);
+      setIsLive(base.some((a) => !a.isDemoData));
       setSelectedCoin((prev) => data.find((a) => a.symbol === prev.symbol) || prev);
 
-      // Avalia gatilhos de ordens LIMIT pendentes, Stop-Loss e Take-Profit com o serviço unificado
-      setPaperAccount((prevAcc) => {
-        const { account: evaluated, triggeredOrders } = evaluateTriggers(prevAcc, data);
-        if (triggeredOrders.length > 0) {
-          if (settings.soundAlerts) {
-            const hasTpOrProfit = triggeredOrders.some((t) => t.type === 'TAKE_PROFIT' || (t.netPnl !== undefined && t.netPnl > 0));
-            if (hasTpOrProfit) soundService.playSuccess();
-            else soundService.playAlert();
-          }
-          StorageService.savePaperAccount(evaluated);
+      // Stop e alvo das posições simuladas, só com preços reais
+      const live = data.filter((a) => !a.isDemoData);
+      const { account: evaluated, triggeredOrders } = evaluateTriggers(accountRef.current, live);
+      if (triggeredOrders.length > 0) {
+        if (settings.soundAlerts) {
+          const win = triggeredOrders.some((t) => t.type === 'TAKE_PROFIT' || (t.netPnl !== undefined && t.netPnl > 0));
+          win ? soundService.playSuccess() : soundService.playAlert();
         }
-        return evaluated;
-      });
+        commitAccount(evaluated);
+      }
     } catch (err) {
       console.warn('Erro ao atualizar preços:', err);
     } finally {
       setIsFetching(false);
       isUpdatingRef.current = false;
     }
-  }, [settings.soundAlerts]);
+  }, [settings.soundAlerts, commitAccount]);
 
-  // Atualização periódica configurada nas configurações com limpeza de temporizador e prevenção de concorrência
   useEffect(() => {
-    refreshPrices(); // Primeira carga
-
-    const intervalSeconds = Math.max(5, settings.refreshIntervalSeconds || 30);
-    const timerId = setInterval(() => {
-      if (!isUpdatingRef.current) {
-        refreshPrices();
-      }
-    }, intervalSeconds * 1000);
-
-    return () => {
-      clearInterval(timerId); // Limpa temporizador ao desmontar
-    };
+    refreshPrices();
+    const id = setInterval(refreshPrices, Math.max(5, settings.refreshIntervalSeconds || 30) * 1000);
+    return () => clearInterval(id);
   }, [refreshPrices, settings.refreshIntervalSeconds]);
 
-  // Sinais reais do scanner do servidor (top 100). Sem servidor/dados, mantém a demonstração.
+  // Ao receber a lista de moedas do scanner, busca os preços delas sem esperar o próximo ciclo
+  const coinsCount = scanInfo?.coins?.length ?? 0;
+  useEffect(() => {
+    if (coinsCount > 0) refreshPrices();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coinsCount]);
+
+  // Sinais reais do scanner do servidor; sem servidor, mantém exemplos
   useEffect(() => {
     let cancelled = false;
-    const loadSignals = async () => {
+    const load = async () => {
       try {
         const r = await fetch('/api/signals', { signal: AbortSignal.timeout(5000) });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -123,6 +118,7 @@ export default function App() {
           exchanges: j.universe?.exchanges,
           marketMode: j.marketMode,
           skipped: j.universe?.skipped ?? [],
+          coins: j.universe?.coins ?? [],
           running: j.running
         });
         if (j.lastScanAt && Array.isArray(j.signals) && !j.lastError) setSignals(j.signals);
@@ -130,230 +126,140 @@ export default function App() {
         if (!cancelled) setScanInfo(null);
       }
     };
-    loadSignals();
-    const id = setInterval(loadSignals, 60000);
+    load();
+    const id = setInterval(load, 60000);
     return () => { cancelled = true; clearInterval(id); };
   }, []);
 
-  // Salva configurações
-  const handleSaveSettings = (newSettings: AppSettings) => {
-    setSettings(newSettings);
-    StorageService.saveSettings(newSettings);
+  const handleSaveSettings = (next: AppSettings) => {
+    setSettings(next);
+    StorageService.saveSettings(next);
   };
 
-  // Abrir detalhes de uma moeda
-  const handleSelectCoin = (asset: CryptoAsset) => {
-    setSelectedCoin(asset);
-    setActiveTab('details');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+  const goTo = (tab: ScreenTab) => {
+    setActiveTab(tab);
+    window.scrollTo({ top: 0 });
   };
 
-  const handleSelectCoinBySymbol = (symbol: string) => {
-    const found = assets.find((a) => a.symbol === symbol) || assets[0];
-    handleSelectCoin(found);
-  };
+  const findAsset = (symbol: string, fallbackPrice?: number): CryptoAsset =>
+    assetsRef.current.find((a) => a.symbol === symbol) || {
+      id: symbol.toLowerCase(), symbol, baseAsset: symbol.replace('USDT', ''), quoteAsset: 'USDT',
+      name: symbol.replace('USDT', ''), price: fallbackPrice ?? 0, change24h: 0, high24h: fallbackPrice ?? 0,
+      low24h: fallbackPrice ?? 0, volume24h: 0, exchanges: ['binance'], sparkline: [fallbackPrice ?? 0],
+      lastUpdated: '', isDemoData: true
+    };
 
-  // Abertura de modal de ordem simulada
-  const handleOpenTradeModal = (asset: CryptoAsset) => {
-    setTradeModalCoin(asset);
-    setTradeModalOpen(true);
-  };
+  const handleSelectCoin = (asset: CryptoAsset) => { setSelectedCoin(asset); goTo('details'); };
+  const handleSelectCoinBySymbol = (symbol: string) => handleSelectCoin(findAsset(symbol));
 
-  // Execução de ordem simulada (Paper Trading) com suporte a MARKET e LIMIT
-  const handleConfirmTrade = (
-    tradeData: Omit<PaperPosition, 'id' | 'openTimestamp' | 'isDemo'>
-  ) => {
-    setPaperAccount((prev) => {
-      const res = createTradeOrder(prev, {
-        symbol: tradeData.symbol,
-        direction: tradeData.direction,
-        orderType: tradeData.orderType,
-        entryPrice: tradeData.entryPrice,
-        currentPrice: tradeData.currentPrice,
-        limitPrice: tradeData.limitPrice,
-        investedUSDT: tradeData.investedUSDT,
-        leverage: tradeData.leverage,
-        targetPrice: tradeData.targetPrice,
-        stopLossPrice: tradeData.stopLossPrice
-      });
-
-      if (res.success && res.account) {
-        if (settings.soundAlerts) soundService.playSuccess();
-        StorageService.savePaperAccount(res.account);
-        return res.account;
-      }
-      return prev;
+  // Compra simulada (spot: sem alavancagem, ordem a mercado)
+  const handleConfirmTrade = (req: TradeRequest): { success: boolean; error?: string } => {
+    const asset = trade?.asset;
+    if (!asset || asset.isDemoData) {
+      return { success: false, error: 'Sem preço ao vivo agora. Atualize e tente de novo.' };
+    }
+    const res = createTradeOrder(accountRef.current, {
+      symbol: req.symbol,
+      direction: 'LONG',
+      orderType: 'MARKET',
+      entryPrice: req.price,
+      currentPrice: req.price,
+      investedUSDT: req.amountUSDT,
+      leverage: 1,
+      targetPrice: req.targetPrice,
+      stopLossPrice: req.stopLossPrice
     });
+    if (!res.success || !res.account) return { success: false, error: res.error || 'Não foi possível abrir a simulação.' };
+    if (settings.soundAlerts) soundService.playSuccess();
+    commitAccount(res.account);
+    setTrade(null);
+    goTo('wallet');
+    return { success: true };
   };
 
-  // Cancelamento de ordem LIMIT pendente com devolução integral do saldo reservado
-  const handleCancelPendingOrder = (positionId: string) => {
-    setPaperAccount((prev) => {
-      const res = cancelPendingOrder(prev, positionId);
-      if (res.success && res.account) {
-        StorageService.savePaperAccount(res.account);
-        return res.account;
-      }
-      return prev;
-    });
-  };
-
-  // Encerramento manual de posição aberta a mercado
   const handleClosePosition = (positionId: string) => {
-    setPaperAccount((prev) => {
-      const pos = prev.positions.find((p) => p.id === positionId);
-      if (!pos) return prev;
-
-      const livePrice = assets.find((a) => a.symbol === pos.symbol)?.price || pos.currentPrice || pos.entryPrice;
-      const res = closeOpenPosition(prev, positionId, livePrice, 'MANUAL');
-
-      if (res.success && res.account) {
-        if (settings.soundAlerts) {
-          if ((res.position?.realizedPnl || 0) >= 0) soundService.playSuccess();
-          else soundService.playAlert();
-        }
-        StorageService.savePaperAccount(res.account);
-        return res.account;
-      }
-      return prev;
-    });
-  };
-
-  // Resetar saldo para conta limpa
-  const handleResetPaperAccount = () => {
-    const fresh = StorageService.resetPaperAccount(10000);
-    setPaperAccount(fresh);
-  };
-
-  // Carregar conta de demonstração com dados de exemplo
-  const handleLoadDemoPaperAccount = () => {
-    const demo = StorageService.loadDemoAccount();
-    setPaperAccount(demo);
-  };
-
-  // Título da tela ativa para o cabeçalho
-  const getScreenTitle = () => {
-    switch (activeTab) {
-      case 'dashboard':
-        return 'Radar Principal & Mercados';
-      case 'market':
-        return 'Cotações & Filtros de Exchange';
-      case 'details':
-        return `${selectedCoin.symbol} • Análise Técnica`;
-      case 'signals':
-        return 'Histórico de Sinais Técnicos';
-      case 'paper':
-        return 'Simulador Paper Trading';
-      case 'settings':
-        return 'Configurações & Risco';
-      default:
-        return 'CryptoRadar';
+    const pos = accountRef.current.positions.find((p) => p.id === positionId);
+    if (!pos) return;
+    const live = assetsRef.current.find((a) => a.symbol === pos.symbol && !a.isDemoData)?.price;
+    const res = closeOpenPosition(accountRef.current, positionId, live || pos.currentPrice || pos.entryPrice, 'MANUAL');
+    if (res.success && res.account) {
+      if (settings.soundAlerts) (res.position?.realizedPnl || 0) >= 0 ? soundService.playSuccess() : soundService.playAlert();
+      commitAccount(res.account);
     }
   };
 
-  return (
-    <div className={`min-h-screen bg-[#0B0E14] text-slate-100 flex justify-center ${isMobileFrame ? 'p-0 sm:p-6 bg-[#07090D]' : ''}`}>
-      {/* Container Mobile ou Moldura de Smartphone para Desktop */}
-      <div
-        className={`w-full min-h-screen flex flex-col transition-all duration-200 ${
-          isMobileFrame
-            ? 'max-w-[420px] rounded-3xl border border-slate-800 shadow-2xl bg-[#0B0E14] overflow-hidden my-auto max-h-[92vh]'
-            : 'max-w-2xl'
-        }`}
-      >
-        {/* Banner Fixo de Modo Demo / Isenção no Topo */}
-        <DisclaimerBanner compact />
+  const handleResetBalance = () => {
+    setPaperAccount(StorageService.resetPaperAccount(10000, true));
+  };
 
-        {/* Header Superior Fixo com indicação do intervalo de monitoramento */}
+  const handleClearHistory = () => {
+    commitAccount({ ...accountRef.current, closedHistory: [], totalTrades: 0, winTrades: 0, lossTrades: 0, totalFeesPaid: 0 });
+  };
+
+  const openSignals = signals.filter((s) => s.status === 'OPEN').length;
+
+  return (
+    <div className="min-h-screen bg-[#0f1115] text-slate-100 flex justify-center">
+      <div className="w-full max-w-2xl min-h-screen flex flex-col">
         <Header
           isLive={isLive}
           isFetching={isFetching}
           onRefresh={refreshPrices}
-          isMobileFrame={isMobileFrame}
-          onToggleFrame={() => setIsMobileFrame(!isMobileFrame)}
-          activeScreenTitle={getScreenTitle()}
-          refreshIntervalSeconds={settings.refreshIntervalSeconds || 30}
+          onOpenSettings={() => goTo('settings')}
         />
 
-        {/* Conteúdo Principal com Scroll */}
-        <main className="flex-1 px-3.5 pt-3 overflow-y-auto">
-          {activeTab === 'dashboard' && (
-            <DashboardView
-              assets={assets}
-              signals={signals}
-              onSelectCoin={handleSelectCoin}
-              onNavigateToSignals={() => setActiveTab('signals')}
-              onNavigateToPaper={() => setActiveTab('paper')}
-              onOpenTradeModal={handleOpenTradeModal}
-            />
-          )}
-
-          {activeTab === 'market' && (
-            <MarketView
-              assets={assets}
-              onSelectCoin={handleSelectCoin}
-              onOpenTradeModal={handleOpenTradeModal}
-            />
-          )}
-
-          {activeTab === 'details' && (
-            <CoinDetailsView
-              asset={selectedCoin}
-              onBack={() => setActiveTab('market')}
-              onOpenTradeModal={handleOpenTradeModal}
-            />
-          )}
-
+        <main className="flex-1 px-4 pt-4">
           {activeTab === 'signals' && (
             <SignalsView
               scanInfo={scanInfo}
               signals={signals}
-              assets={assets}
-              onOpenTradeModal={handleOpenTradeModal}
+              account={paperAccount}
+              onSimulate={(s) => setTrade({ asset: findAsset(s.symbol, s.entryPrice), signal: s })}
+              onClosePosition={handleClosePosition}
               onSelectCoinBySymbol={handleSelectCoinBySymbol}
             />
           )}
 
-          {activeTab === 'paper' && (
-            <PaperTradingView
+          {activeTab === 'wallet' && (
+            <WalletView
               account={paperAccount}
               assets={assets}
-              onOpenNewTradeModal={() => handleOpenTradeModal(assets[0])}
               onClosePosition={handleClosePosition}
-              onCancelPendingOrder={handleCancelPendingOrder}
-              onResetAccount={handleResetPaperAccount}
-              onLoadDemoAccount={handleLoadDemoPaperAccount}
+              onResetBalance={handleResetBalance}
+              onClearHistory={handleClearHistory}
               onSelectCoinBySymbol={handleSelectCoinBySymbol}
             />
+          )}
+
+          {activeTab === 'market' && (
+            <MarketView assets={assets} coins={scanInfo?.coins ?? []} onSelectCoin={handleSelectCoin} />
+          )}
+
+          {activeTab === 'details' && (
+            <CoinDetailsView asset={selectedCoin} onBack={() => goTo('market')} onOpenTradeModal={(asset) => setTrade({ asset })} />
           )}
 
           {activeTab === 'settings' && (
-            <SettingsView
-              settings={settings}
-              onSaveSettings={handleSaveSettings}
-            />
+            <SettingsView settings={settings} scanInfo={scanInfo} onSaveSettings={handleSaveSettings} onBack={() => goTo('signals')} />
           )}
         </main>
 
-        {/* Navegação Inferior Fixa no Celular */}
         <BottomNav
           activeTab={activeTab}
-          onSelectTab={(tab) => {
-            setActiveTab(tab);
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          }}
-          openPositionsCount={paperAccount.positions.length}
-          activeSignalsCount={signals.filter((s) => s.status === 'OPEN').length}
+          onSelectTab={goTo}
+          openSignals={openSignals}
+          openPositions={paperAccount.positions.filter((p) => p.status === 'OPEN').length}
         />
 
-        {/* Modal de Nova Ordem Simulada */}
-        <NewTradeModal
-          isOpen={tradeModalOpen}
-          onClose={() => setTradeModalOpen(false)}
-          assets={assets}
-          initialAsset={tradeModalCoin}
-          virtualBalance={paperAccount.virtualBalance}
-          onConfirmTrade={handleConfirmTrade}
+        <TradeSheet
+          asset={trade?.asset ?? null}
+          signal={trade?.signal}
+          balance={paperAccount.virtualBalance}
+          riskPercent={settings.risk.maxRiskPerTradePercent}
+          defaultStopPercent={settings.risk.defaultStopLossPercent}
+          defaultRewardRatio={settings.risk.defaultTakeProfitRatio}
+          onClose={() => setTrade(null)}
+          onConfirm={handleConfirmTrade}
         />
       </div>
     </div>

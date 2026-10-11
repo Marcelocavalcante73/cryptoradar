@@ -83,10 +83,11 @@ export async function getTelegramServerStatus(): Promise<TelegramBackendStatus> 
  * O frontend NUNCA manipula ou transmite o token do bot.
  */
 export async function sendTelegramTestMessage(
-  chatId: string,
+  chatId: string = '',
   customMessage?: string
 ): Promise<TelegramSendResult> {
-  const validation = validateTelegramDestination(chatId);
+  // Sem destino informado, o servidor usa TELEGRAM_CHAT_ID do .env
+  const validation = chatId.trim() ? validateTelegramDestination(chatId) : { isValid: true, error: undefined };
   if (!validation.isValid) {
     return {
       success: false,
@@ -103,7 +104,7 @@ export async function sendTelegramTestMessage(
         Accept: 'application/json'
       },
       body: JSON.stringify({
-        chatId: chatId.trim(),
+        chatId: chatId.trim() || undefined,
         message: customMessage
       }),
       signal: AbortSignal.timeout(8000)
@@ -115,7 +116,7 @@ export async function sendTelegramTestMessage(
       return {
         success: true,
         configured: true,
-        message: data.message || `Mensagem enviada com sucesso para ${chatId.trim()}!`,
+        message: data.message || 'Mensagem de teste enviada.',
         statusCode: 200
       };
     }

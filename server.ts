@@ -45,6 +45,7 @@ app.get('/api/telegram/status', (_req: Request, res: Response) => {
     configured,
     service: 'telegram',
     status: configured ? 'CONFIGURED' : 'NOT_CONFIGURED',
+    chatConfigured: Boolean(process.env.TELEGRAM_CHAT_ID?.trim()),
     message: configured
       ? 'Backend pronto: variável TELEGRAM_BOT_TOKEN configurada no servidor.'
       : 'Variável TELEGRAM_BOT_TOKEN não encontrada no .env do servidor. Envios reais desabilitados.'
@@ -78,11 +79,13 @@ app.post('/api/telegram/test', async (req: Request, res: Response) => {
   }
 
   // 3. Validação do destino (chatId)
-  const { chatId, message } = req.body || {};
+  const body = req.body || {};
+  const message = body.message;
+  const chatId = typeof body.chatId === 'string' && body.chatId.trim() ? body.chatId : process.env.TELEGRAM_CHAT_ID;
   if (!chatId || typeof chatId !== 'string') {
     return res.status(400).json({
       success: false,
-      error: 'Identificador de destino (chatId) é obrigatório.'
+      error: 'Defina TELEGRAM_CHAT_ID no .env do servidor para receber os alertas.'
     });
   }
 

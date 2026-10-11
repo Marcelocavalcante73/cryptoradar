@@ -42,6 +42,8 @@ import { runBacktest, computeStats, BacktestTrade } from '../services/backtest';
 import { buildUniverse } from '../../server/universe';
 import { formatTelegramAlert } from '../../server/scanner';
 import { computeSignalPerformance, signalResultR, PerfSignal } from '../services/signalPerformance';
+import { suggestAmount } from '../components/paperTrading/TradeSheet';
+import { historyToCsv } from '../components/paperTrading/WalletView';
 import { evaluateSignal, scoreCandles, MIN_SCORE } from '../services/signalEngine';
 import { StorageService, INITIAL_PAPER_ACCOUNT } from '../services/storageService';
 import { CandleData, CryptoAsset, PaperAccount } from '../types/crypto';
@@ -628,6 +630,41 @@ assert(perf.byTimeframe[1].resolved === 1 && perf.byTimeframe[0].resolved === 2,
 assert(perf.byScore[0].resolved === 1 && perf.byScore[1].resolved === 1 && perf.byScore[2].resolved === 1, 'Separação por faixa de pontuação');
 assert(perf.reliable === false, 'Amostra pequena (<30) é marcada como não confiável');
 assert(computeSignalPerformance([]).total === 0 && computeSignalPerformance([]).overall.winRate === 0, 'Sem sinais não quebra');
+
+// ============================================================================
+// 10. CARTEIRA: TAMANHO DA ORDEM, HISTÓRICO PERSISTENTE E CSV
+// ============================================================================
+console.log('\n--- 10. Carteira ---');
+
+// Saldo 10.000, risco 2% = $200; stop a 2% do preço => posição ~ $9.600 (limitada a 95% do saldo)
+const sz = suggestAmount(10000, 100, 98, 2);
+const lossAtStop = sz * 0.02 + sz * 0.001;
+assert(sz > 0 && Math.abs(lossAtStop - 200) < 5, 'Tamanho sugerido perde ~2% do saldo (incluindo taxas) se o stop for atingido', `tamanho=${sz} perda=${lossAtStop.toFixed(2)}`);
+assert(suggestAmount(10000, 100, 99.9, 2) <= 9500, 'Tamanho sugerido nunca passa de 95% do saldo (stop muito curto)');
+assert(suggestAmount(10000, 100, 101, 2) === 0, 'Stop acima do preço => tamanho 0');
+
+const store = new Map<string, string>();
+(globalThis as any).localStorage = {
+  getItem: (k: string) => store.get(k) ?? null,
+  setItem: (k: string, v: string) => { store.set(k, v); },
+  removeItem: (k: string) => { store.delete(k); }
+};
+const closed = (id: string, pnl: number, reason: any = 'TAKE_PROFIT'): any => ({
+  id, symbol: 'BTCUSDT', direction: 'LONG', orderType: 'MARKET', entryPrice: 100, currentPrice: 105, amount: 1,
+  investedUSDT: 100, leverage: 1, openTimestamp: 1_700_000_000_000, closedTimestamp: 1_700_003_600_000, closePrice: 105,
+  openFee: 0.05, closeFee: 0.05, totalFees: 0.1, realizedPnl: pnl, realizedPnlPercent: pnl, closeReason: reason, status: 'CLOSED', isDemo: true
+});
+StorageService.savePaperAccount({ ...INITIAL_PAPER_ACCOUNT, virtualBalance: 7000, closedHistory: [closed('a', 4.9), closed('b', -2.1, 'STOP_LOSS')] });
+const afterReset = StorageService.resetPaperAccount(10000, true);
+assert(afterReset.virtualBalance === 10000 && afterReset.positions.length === 0, 'Zerar saldo restaura $10.000 e remove posições');
+assert(afterReset.closedHistory.length === 2, 'Zerar saldo preserva o histórico de operações');
+assert(StorageService.getPaperAccount().closedHistory.length === 2, 'Histórico persiste no armazenamento após zerar');
+assert(StorageService.resetPaperAccount(10000).closedHistory.length === 0, 'Reset total (sem keepHistory) apaga o histórico');
+
+const csv = historyToCsv([closed('a', 4.9), closed('b', -2.1, 'STOP_LOSS'), closed('c', 0, 'CANCELLED')]);
+const lines = csv.split('\n');
+assert(lines.length === 3, 'CSV: cabeçalho + 2 operações (canceladas ficam de fora)', `linhas=${lines.length}`);
+assert(lines[0].startsWith('abertura,fechamento,moeda') && lines[1].includes('BTCUSDT') && lines[1].includes('Alvo') && lines[2].includes('Stop'), 'CSV traz moeda, motivo e resultado');
 
 console.log('\n========================================================');
 console.log(`TOTAL DE TESTES EXECUTADOS: ${totalTests}`);
