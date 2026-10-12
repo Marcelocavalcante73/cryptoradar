@@ -12,6 +12,7 @@
 
 import { CandleData, SignalDirection } from '../types/crypto';
 import { calculateAllIndicators } from './indicators';
+import { priceDecimals } from './apiService';
 import { evaluateSignal, ATR_STOP_MULT, ATR_TARGET_MULT, MIN_CANDLES } from './signalEngine';
 
 export interface BacktestOptions {
@@ -116,7 +117,7 @@ export function runBacktest(
   options: Partial<BacktestOptions> = {}
 ): BacktestResult {
   const opt = { ...DEFAULT_BACKTEST_OPTIONS, ...options };
-  const decimals = rawCandles.length > 0 && rawCandles[rawCandles.length - 1].close < 10 ? 4 : 2;
+  const decimals = rawCandles.length > 0 ? priceDecimals(rawCandles[rawCandles.length - 1].close) : 4;
   // Os indicadores são recursivos e causais: o valor na vela i só depende de velas ≤ i.
   const candles = calculateAllIndicators(rawCandles, decimals);
   const trades: BacktestTrade[] = [];

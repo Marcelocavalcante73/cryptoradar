@@ -1,32 +1,31 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { ArrowLeft, Maximize2, RotateCw } from 'lucide-react';
-import { CryptoAsset, CandleData, Timeframe } from '../../types/crypto';
+import { ArrowLeft } from 'lucide-react';
+import { CryptoAsset, CandleData, Timeframe, TechnicalSignal } from '../../types/crypto';
 import { apiService } from '../../services/apiService';
 import { calculateTechnicalDiagnosis } from '../../services/indicators';
-import { CandlestickChart } from './CandlestickChart';
+import { TvChart, ChartLevel } from './TvChart';
 import { fmtPrice, fmtPct, pnlColor } from '../common/format';
 
 interface CoinDetailsViewProps {
   asset: CryptoAsset;
+  signals?: TechnicalSignal[];
   onBack: () => void;
   onOpenTradeModal: (asset: CryptoAsset) => void;
 }
 
 const TIMEFRAMES: Timeframe[] = ['15m', '1h', '4h', '1D', '1W'];
 
-export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, onBack, onOpenTradeModal }) => {
+export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, signals = [], onBack, onOpenTradeModal }) => {
   const [timeframe, setTimeframe] = useState<Timeframe>('4h');
   const [candles, setCandles] = useState<CandleData[]>([]);
   const [live, setLive] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [isChartExpanded, setIsChartExpanded] = useState(false);
-  const [isChartRotated, setIsChartRotated] = useState(false);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     apiService
-      .fetchHistoricalKlines(asset.symbol, timeframe, asset, 120)
+      .fetchHistoricalKlines(asset.symbol, timeframe, asset, 300)
       .then((res) => {
         if (!active) return;
         // Nunca mostra velas sintéticas como se fossem reais
@@ -42,6 +41,18 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, onBack,
   const verdictColor =
     diagnosis.summary.sentiment === 'bullish' ? 'text-emerald-400'
     : diagnosis.summary.sentiment === 'bearish' ? 'text-rose-400' : 'text-slate-300';
+
+  // Entrada, stop e alvo do sinal de compra aberto desta moeda, desenhados sobre o gráfico
+  const levels = useMemo<ChartLevel[]>(() => {
+    const sig = signals.find((x) => x.symbol === asset.symbol && x.status === 'OPEN' && x.direction === 'LONG');
+    return sig
+      ? [
+          { price: sig.entryPrice, color: '#cbd5e1', title: 'Entrada' },
+          { price: sig.targetPrice, color: '#26a69a', title: 'Alvo' },
+          { price: sig.stopLossPrice, color: '#ef5350', title: 'Stop' }
+        ]
+      : [];
+  }, [signals, asset.symbol]);
 
   const hasPrice = asset.price > 0;
 
@@ -65,62 +76,19 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, onBack,
         </div>
       ) : live ? (
         <>
-          {/* Barra de Acesso Rápido ao Gráfico TradingView & Fullscreen Mobile */}
-          <div className="flex items-center justify-between gap-2 flex-wrap bg-[#111622] p-2.5 rounded-xl border border-slate-800">
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-xs font-semibold text-slate-200">Gráfico Interativo Binance</span>
-              <span className="text-[11px] text-slate-400 hidden sm:inline">· TradingView Guide</span>
-            </div>
-            <div className="flex items-center gap-1.5">
+          <div className="inline-flex bg-[#161920] border border-[#23272f] rounded-lg p-0.5">
+            {TIMEFRAMES.map((tf) => (
               <button
-                onClick={() => {
-                  setIsChartRotated(true);
-                  setIsChartExpanded(true);
-                }}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600/20 hover:bg-purple-600/30 text-purple-200 border border-purple-500/30 rounded-lg text-xs font-medium transition-all"
-                title="Abrir no modo paisagem rotacionado horizontalmente a 90° (otimizado para telas pequenas)"
+                key={tf}
+                onClick={() => setTimeframe(tf)}
+                className={`px-3.5 py-1.5 text-sm rounded-md ${timeframe === tf ? 'bg-[#2a2f3a] text-slate-100' : 'text-slate-400'}`}
               >
-                <RotateCw className="w-3.5 h-3.5" />
-                <span>Modo Paisagem (90°)</span>
+                {tf}
               </button>
-              <button
-                onClick={() => {
-                  setIsChartRotated(false);
-                  setIsChartExpanded(true);
-                }}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 rounded-lg text-xs font-medium transition-all"
-                title="Expandir gráfico em tela cheia (Fullscreen)"
-              >
-                <Maximize2 className="w-3.5 h-3.5" />
-                <span>Fullscreen</span>
-              </button>
-            </div>
+            ))}
           </div>
 
-          <CandlestickChart
-            candles={candles}
-            assetSymbol={asset.symbol}
-            assetName={asset.name}
-            currentPrice={asset.price}
-            priceChange24h={asset.change24h}
-            timeframe={timeframe}
-            onChangeTimeframe={(tf) => setTimeframe(tf)}
-            onOpenTradeModal={() => onOpenTradeModal(asset)}
-            chartType="candle"
-            showEma20={true}
-            showEma50={true}
-            showBollinger={false}
-            showVolume={true}
-            showRsi={false}
-            showMacd={false}
-            height={340}
-            isExpandable={true}
-            isExpanded={isChartExpanded}
-            onToggleExpand={(exp) => setIsChartExpanded(exp)}
-            isRotated={isChartRotated}
-            onToggleRotate={(rot) => setIsChartRotated(rot)}
-          />
+          <TvChart candles={candles} levels={levels} tvSymbol={`BINANCE:${asset.symbol}`} height={340} />
           <div className="bg-[#161920] border border-[#23272f] rounded-xl p-4">
             <div className="text-sm text-slate-400">Leitura técnica ({timeframe})</div>
             <div className={`text-lg font-semibold ${verdictColor}`}>{diagnosis.summary.verdict}</div>

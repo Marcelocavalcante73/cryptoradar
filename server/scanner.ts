@@ -8,7 +8,7 @@ import path from 'path';
 import { CandleData } from '../src/types/crypto';
 import { calculateAllIndicators } from '../src/services/indicators';
 import { evaluateSignal, EngineSignal } from '../src/services/signalEngine';
-import { parseBinanceKline } from '../src/services/apiService';
+import { parseBinanceKline, priceDecimals } from '../src/services/apiService';
 import { binanceGet, buildUniverse, Universe } from './universe';
 
 const TIMEFRAMES = ['1h', '4h'] as const;
@@ -80,7 +80,7 @@ export function getScanState(): ScanState {
 
 async function fetchClosedCandles(symbol: string, tf: string, price: number): Promise<CandleData[]> {
   const raw = await binanceGet(`/api/v3/klines?symbol=${symbol}&interval=${tf}&limit=250`);
-  const decimals = price < 10 ? 4 : 2;
+  const decimals = priceDecimals(price);
   const parsed: CandleData[] = [];
   for (const k of raw as any[]) {
     const c = parseBinanceKline(k, tf as any, decimals);

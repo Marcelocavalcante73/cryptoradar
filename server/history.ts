@@ -6,7 +6,8 @@ import { binanceGet } from './universe';
  * Baixa até `bars` candles FECHADOS da Binance (paginando de 1000 em 1000, do mais recente para trás).
  */
 export async function fetchHistory(symbol: string, tf: string, bars: number, price = 1): Promise<CandleData[]> {
-  const decimals = price < 10 ? 4 : 2;
+  const decimals = 10; // mantém a precisão original, inclusive em moedas de valor muito baixo
+  void price;
   let endTime: number | undefined;
   let all: CandleData[] = [];
 

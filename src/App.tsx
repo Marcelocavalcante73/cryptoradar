@@ -247,7 +247,7 @@ export default function App() {
           )}
 
           {activeTab === 'details' && (
-            <CoinDetailsView asset={selectedCoin} onBack={() => goTo('market')} onOpenTradeModal={(asset) => setTrade({ asset })} />
+            <CoinDetailsView asset={selectedCoin} signals={signals} onBack={() => goTo('market')} onOpenTradeModal={(asset) => setTrade({ asset })} />
           )}
 
           {activeTab === 'settings' && (
