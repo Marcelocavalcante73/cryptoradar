@@ -125,18 +125,49 @@ export class CryptoApiService implements MarketDataProvider {
       const targetSymbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'SUIUSDT', 'NEARUSDT'];
       const symbolsParam = encodeURIComponent(JSON.stringify(targetSymbols));
 
-      const response = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbols=${symbolsParam}`, {
-        headers: { Accept: 'application/json' },
-        signal: AbortSignal.timeout(4000)
-      });
+      let rawData: any = null;
 
-      if (!response.ok) {
-        throw new Error(`Binance API retornou status HTTP ${response.status}`);
+      // 1. Tenta proxy local /api/market/tickers do servidor Fullstack
+      try {
+        const localRes = await fetch('/api/market/tickers', { signal: AbortSignal.timeout(3000) });
+        if (localRes.ok) {
+          const list = await localRes.json();
+          if (Array.isArray(list) && list.length > 0) {
+            rawData = list;
+          }
+        }
+      } catch {
+        // Fallback para espelhos públicos oficiais
       }
 
-      const rawData = await response.json();
+      // 2. Se o proxy local não respondeu, consulta os espelhos oficiais da Binance (Vision primeiro, sem bloqueio regional)
+      if (!rawData) {
+        const endpoints = [
+          `https://data-api.binance.vision/api/v3/ticker/24hr?symbols=${symbolsParam}`,
+          `https://api.binance.com/api/v3/ticker/24hr?symbols=${symbolsParam}`
+        ];
+
+        for (const url of endpoints) {
+          try {
+            const response = await fetch(url, {
+              headers: { Accept: 'application/json' },
+              signal: AbortSignal.timeout(4000)
+            });
+            if (response.ok) {
+              const parsed = await response.json();
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                rawData = parsed;
+                break;
+              }
+            }
+          } catch {
+            // tenta o próximo espelho
+          }
+        }
+      }
+
       if (!Array.isArray(rawData)) {
-        throw new Error('Formato retornado pela Binance não é uma lista de cotações válida');
+        throw new Error('Falha ao obter cotações da Binance nos espelhos públicos');
       }
 
       const priceMap = new Map<string, any>();
@@ -215,7 +246,7 @@ export class CryptoApiService implements MarketDataProvider {
     const out: CryptoAsset[] = [];
     for (let i = 0; i < unique.length; i += 50) {
       const chunk = encodeURIComponent(JSON.stringify(unique.slice(i, i + 50)));
-      for (const host of ['https://api.binance.com', 'https://data-api.binance.vision']) {
+      for (const host of ['https://data-api.binance.vision', 'https://api.binance.com']) {
         try {
           const r = await fetch(`${host}/api/v3/ticker/24hr?symbols=${chunk}`, {
             headers: { Accept: 'application/json' },
@@ -272,10 +303,10 @@ export class CryptoApiService implements MarketDataProvider {
     const interval = timeframeToBinanceInterval(timeframe);
     const decimals = assetFallback && assetFallback.price < 10 ? 4 : 2;
 
-    // Tentativas ordenadas: endpoint principal da Binance e mirror público oficial Binance Vision
+    // Tentativas ordenadas: mirror público oficial Binance Vision (sem bloqueio) e endpoint principal
     const endpoints = [
-      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
-      `https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
+      `https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
+      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
     ];
 
     let lastError: string | undefined;

@@ -48,7 +48,7 @@ export async function fetchBybitSpotSymbols(): Promise<Set<string>> {
   return new Set<string>(j.result.list.map((t: any) => String(t.symbol)));
 }
 
-const BINANCE_HOSTS = ['https://api.binance.com', 'https://data-api.binance.vision'];
+const BINANCE_HOSTS = ['https://data-api.binance.vision', 'https://api.binance.com'];
 
 export async function binanceGet(path: string, timeoutMs = 8000): Promise<any> {
   let lastErr: unknown;

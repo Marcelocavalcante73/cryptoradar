@@ -41,7 +41,7 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, onBack,
     diagnosis.summary.sentiment === 'bullish' ? 'text-emerald-400'
     : diagnosis.summary.sentiment === 'bearish' ? 'text-rose-400' : 'text-slate-300';
 
-  const hasPrice = !asset.isDemoData && asset.price > 0;
+  const hasPrice = asset.price > 0;
 
   return (
     <div className="space-y-4 pb-28">

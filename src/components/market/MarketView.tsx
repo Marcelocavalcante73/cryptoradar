@@ -67,9 +67,9 @@ export const MarketView: React.FC<MarketViewProps> = ({ assets, coins, onSelectC
                 </div>
               </div>
               <div className="text-right">
-                <div className="text-base text-slate-100 tabular-nums">{asset && !asset.isDemoData ? `$${fmtPrice(asset.price)}` : '—'}</div>
-                <div className={`text-sm tabular-nums ${asset && !asset.isDemoData ? pnlColor(asset.change24h) : 'text-slate-500'}`}>
-                  {asset && !asset.isDemoData ? fmtPct(asset.change24h) : ''}
+                <div className="text-base text-slate-100 tabular-nums">{asset && (!asset.isDemoData || asset.price > 0) ? `$${fmtPrice(asset.price)}` : '—'}</div>
+                <div className={`text-sm tabular-nums ${asset && (!asset.isDemoData || asset.change24h !== 0) ? pnlColor(asset.change24h) : 'text-slate-500'}`}>
+                  {asset && (!asset.isDemoData || asset.change24h !== 0) ? fmtPct(asset.change24h) : ''}
                 </div>
               </div>
             </button>

@@ -6,8 +6,14 @@ import { fileURLToPath } from 'url';
 import { getScanState, runScan, startScanner } from './server/scanner';
 import { fetchHistory } from './server/history';
 import { runBacktest } from './src/services/backtest';
+import { binanceGet } from './server/universe';
 
 dotenv.config();
+
+// Define Binance como corretora padrão do scanner no servidor (evita bloqueio regional 403 da Bybit)
+if (!process.env.EXCHANGES) {
+  process.env.EXCHANGES = 'binance';
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -143,6 +149,33 @@ app.post('/api/telegram/test', async (req: Request, res: Response) => {
         ? 'Tempo limite esgotado ao contatar os servidores do Telegram.'
         : 'Falha de rede ao conectar com a API do Telegram.'
     });
+  }
+});
+
+/**
+ * GET /api/market/tickers — cotações 24h reais dos pares USDT da Binance com cache em memória.
+ */
+let cachedTickers: any = null;
+let lastTickersFetch = 0;
+const TICKERS_CACHE_TTL_MS = 3000;
+
+app.get('/api/market/tickers', async (_req: Request, res: Response) => {
+  const now = Date.now();
+  if (cachedTickers && now - lastTickersFetch < TICKERS_CACHE_TTL_MS) {
+    return res.json(cachedTickers);
+  }
+  try {
+    const raw = await binanceGet('/api/v3/ticker/24hr', 5000);
+    if (Array.isArray(raw)) {
+      cachedTickers = raw;
+      lastTickersFetch = now;
+      return res.json(raw);
+    }
+    if (cachedTickers) return res.json(cachedTickers);
+    res.status(502).json({ error: 'Resposta inválida de cotações da Binance' });
+  } catch (err: any) {
+    if (cachedTickers) return res.json(cachedTickers);
+    res.status(502).json({ error: err?.message || 'Falha ao consultar cotações da Binance' });
   }
 });
 
