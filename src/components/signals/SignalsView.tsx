@@ -25,6 +25,8 @@ interface SignalsViewProps {
   onSimulate: (signal: TechnicalSignal) => void;
   onClosePosition: (positionId: string) => void;
   onSelectCoinBySymbol: (symbol: string) => void;
+  isDemoData?: boolean;
+  demoReason?: string | null;
 }
 
 const Seg: React.FC<{ value: string; options: [string, string][]; onChange: (v: string) => void }> = ({ value, options, onChange }) => (
@@ -41,7 +43,16 @@ const Seg: React.FC<{ value: string; options: [string, string][]; onChange: (v: 
   </div>
 );
 
-export const SignalsView: React.FC<SignalsViewProps> = ({ scanInfo, signals, account, onSimulate, onClosePosition, onSelectCoinBySymbol }) => {
+export const SignalsView: React.FC<SignalsViewProps> = ({
+  scanInfo,
+  signals,
+  account,
+  onSimulate,
+  onClosePosition,
+  onSelectCoinBySymbol,
+  isDemoData,
+  demoReason
+}) => {
   const [status, setStatus] = useState<'open' | 'closed'>('open');
   const [side, setSide] = useState<'all' | 'buy' | 'sell'>('all');
 
@@ -68,7 +79,21 @@ export const SignalsView: React.FC<SignalsViewProps> = ({ scanInfo, signals, acc
         <span className="text-xs text-slate-400">{statusText}</span>
       </div>
 
-      {!live && !scanInfo?.running && (
+      {isDemoData && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-3.5 flex items-start gap-3">
+          <div className="w-2.5 h-2.5 rounded-full bg-amber-400 mt-1 shrink-0 animate-pulse" />
+          <div className="flex-1">
+            <div className="text-sm font-semibold text-amber-300">
+              Dados em modo de simulação
+            </div>
+            <p className="text-xs text-amber-200/80 mt-0.5 leading-relaxed">
+              {demoReason || 'Cotações estáticas ou sem volatilidade detectada da Binance no período recente. A plataforma está operando com dados de simulação para segurança operacional.'}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {!live && !scanInfo?.running && !isDemoData && (
         <p className="text-sm text-amber-300 bg-[#161920] border border-[#23272f] rounded-xl p-3 leading-relaxed">
           {scanInfo?.lastError ? `Scanner com erro: ${scanInfo.lastError}. ` : ''}
           Os sinais abaixo são de exemplo e não refletem o mercado agora.

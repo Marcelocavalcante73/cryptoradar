@@ -94,8 +94,315 @@ export function parseBinanceKline(raw: any[], timeframe: Timeframe, decimals: nu
   };
 }
 
+/**
+ * Resultado da validação de integridade dos dados de mercado da Binance.
+ */
+export interface MarketDataValidationResult {
+  isValid: boolean;
+  isDemoDataForced: boolean;
+  reason?: string;
+  volatility: number;
+  timestampAgeMs: number;
+  isStaleTimestamp: boolean;
+  isStaticPrices: boolean;
+  consecutiveStaticCycles: number;
+  lastCheckedAt: number;
+}
+
+/**
+ * Parâmetros de tolerância do validador de dados.
+ */
+export interface MarketDataValidatorConfig {
+  /** Idade máxima do timestamp da Binance em ms (padrão: 180.000 ms = 3 min) */
+  maxTimestampAgeMs?: number;
+  /** Tolerância para detectar congelamento de timestamp entre consultas (padrão: 30.000 ms) */
+  timestampFreezeToleranceMs?: number;
+  /** Variação mínima aceitável para considerar volatilidade saudável (padrão: 0.00001) */
+  minVolatilityThreshold?: number;
+  /** Número máximo de ciclos com preços 100% estáticos antes de forçar modo de simulação (padrão: 2) */
+  maxStaticCycles?: number;
+  /** Duração máxima de preços estáticos em ms antes de forçar modo de simulação (padrão: 45.000 ms) */
+  maxStaticDurationMs?: number;
+}
+
+/**
+ * Utilitário puro de validação de dados da Binance.
+ * Compara timestamp e volatilidade dos preços recebidos.
+ * Se os dados forem estáticos, congelados ou não variarem em um período razoável,
+ * força o estado de simulação (isDemoDataForced: true, isValid: false).
+ */
+export function validateBinanceMarketData(
+  tickers: any[],
+  previousPricesMap?: Map<string, number> | Record<string, number> | null,
+  options?: MarketDataValidatorConfig & {
+    now?: number;
+    previousTimestamp?: number | null;
+    previousCheckedAt?: number | null;
+    staticSinceTimestamp?: number | null;
+    consecutiveStaticCycles?: number;
+  }
+): MarketDataValidationResult {
+  const now = options?.now ?? Date.now();
+  const maxTimestampAgeMs = options?.maxTimestampAgeMs ?? 180_000;
+  const timestampFreezeToleranceMs = options?.timestampFreezeToleranceMs ?? 30_000;
+  const minVolatilityThreshold = options?.minVolatilityThreshold ?? 0.00001;
+  const maxStaticCycles = options?.maxStaticCycles ?? 2;
+  const maxStaticDurationMs = options?.maxStaticDurationMs ?? 45_000;
+  let consecutiveCycles = options?.consecutiveStaticCycles ?? 0;
+
+  if (!Array.isArray(tickers) || tickers.length === 0) {
+    return {
+      isValid: false,
+      isDemoDataForced: true,
+      reason: 'Lista de cotações da Binance vazia ou corrompida',
+      volatility: 0,
+      timestampAgeMs: 0,
+      isStaleTimestamp: true,
+      isStaticPrices: true,
+      consecutiveStaticCycles: consecutiveCycles + 1,
+      lastCheckedAt: now
+    };
+  }
+
+  // 1. Validação de Timestamps
+  let latestCloseTime = 0;
+  for (const t of tickers) {
+    const rawTime = Number(t.closeTime ?? t.openTime ?? t.timestamp ?? 0);
+    if (Number.isFinite(rawTime) && rawTime > latestCloseTime) {
+      latestCloseTime = rawTime;
+    }
+  }
+
+  const timestampAgeMs = latestCloseTime > 0 ? Math.max(0, now - latestCloseTime) : 0;
+  const isStaleTimestamp = latestCloseTime > 0 && timestampAgeMs > maxTimestampAgeMs;
+
+  let isFrozenTimestamp = false;
+  if (
+    options?.previousTimestamp &&
+    options?.previousCheckedAt &&
+    latestCloseTime > 0
+  ) {
+    const elapsed = now - options.previousCheckedAt;
+    if (elapsed >= timestampFreezeToleranceMs && latestCloseTime === options.previousTimestamp) {
+      isFrozenTimestamp = true;
+    }
+  }
+
+  // 2. Validação de Volatilidade
+  let totalSpread = 0;
+  let countSpread = 0;
+  const currentPrices = new Map<string, number>();
+
+  for (const t of tickers) {
+    const sym = String(t.symbol || t.id || '');
+    const price = parseFloat(t.lastPrice ?? t.price ?? 0);
+    const high = parseFloat(t.highPrice ?? t.high24h ?? price);
+    const low = parseFloat(t.lowPrice ?? t.low24h ?? price);
+
+    if (sym && Number.isFinite(price) && price > 0) {
+      currentPrices.set(sym, price);
+      if (Number.isFinite(high) && Number.isFinite(low) && high >= low) {
+        const spread = (high - low) / price;
+        totalSpread += spread;
+        countSpread++;
+      }
+    }
+  }
+
+  const avgIntradaySpread = countSpread > 0 ? totalSpread / countSpread : 0;
+  const hasZeroIntradayVolatility = countSpread > 0 && avgIntradaySpread < minVolatilityThreshold;
+
+  // Comparação temporal com ciclo anterior
+  let isIdenticalToPrevious = false;
+  const prevMap =
+    previousPricesMap instanceof Map
+      ? previousPricesMap
+      : previousPricesMap
+      ? new Map(Object.entries(previousPricesMap))
+      : null;
+
+  if (prevMap && prevMap.size > 0 && currentPrices.size > 0) {
+    let checkedCount = 0;
+    let matchCount = 0;
+    for (const [sym, price] of currentPrices.entries()) {
+      const prev = prevMap.get(sym);
+      if (prev !== undefined) {
+        checkedCount++;
+        if (price === prev) {
+          matchCount++;
+        }
+      }
+    }
+    if (checkedCount > 0 && matchCount === checkedCount) {
+      isIdenticalToPrevious = true;
+    }
+  }
+
+  if (isIdenticalToPrevious) {
+    consecutiveCycles++;
+  } else {
+    consecutiveCycles = 0;
+  }
+
+  const staticSince = isIdenticalToPrevious
+    ? options?.staticSinceTimestamp ?? options?.previousCheckedAt ?? now
+    : null;
+  const staticDurationMs = staticSince !== null ? now - staticSince : 0;
+
+  const isStaticDurationExceeded = staticSince !== null && staticDurationMs >= maxStaticDurationMs;
+  const isStaticCyclesExceeded = consecutiveCycles >= maxStaticCycles;
+  const isStaticPrices = hasZeroIntradayVolatility || (isIdenticalToPrevious && (isStaticDurationExceeded || isStaticCyclesExceeded));
+
+  let reason: string | undefined;
+  let isDemoDataForced = false;
+
+  if (isStaleTimestamp) {
+    reason = `Timestamp desatualizado da Binance (${Math.round(timestampAgeMs / 1000)}s atrás)`;
+    isDemoDataForced = true;
+  } else if (isFrozenTimestamp) {
+    reason = 'Timestamp da Binance congelado entre consultas sucessivas';
+    isDemoDataForced = true;
+  } else if (hasZeroIntradayVolatility) {
+    reason = 'Volatilidade nula detectada nos preços da Binance (high = low)';
+    isDemoDataForced = true;
+  } else if (isStaticPrices) {
+    reason = `Preços estáticos e sem variação detectada da Binance no período (${consecutiveCycles} ciclo(s))`;
+    isDemoDataForced = true;
+  }
+
+  return {
+    isValid: !isDemoDataForced,
+    isDemoDataForced,
+    reason,
+    volatility: avgIntradaySpread,
+    timestampAgeMs,
+    isStaleTimestamp,
+    isStaticPrices,
+    consecutiveStaticCycles: consecutiveCycles,
+    lastCheckedAt: now
+  };
+}
+
+/**
+ * Utilitário com estado para validação contínua da saúde e volatilidade da Binance.
+ */
+export class MarketDataValidator {
+  private config: Required<MarketDataValidatorConfig>;
+  private previousSnapshot: Map<string, number> | null = null;
+  private previousTimestamp: number | null = null;
+  private previousCheckedAt: number | null = null;
+  private staticSinceTimestamp: number | null = null;
+  private consecutiveStaticCycles = 0;
+  private lastResult: MarketDataValidationResult = {
+    isValid: true,
+    isDemoDataForced: false,
+    volatility: 1,
+    timestampAgeMs: 0,
+    isStaleTimestamp: false,
+    isStaticPrices: false,
+    consecutiveStaticCycles: 0,
+    lastCheckedAt: Date.now()
+  };
+
+  constructor(config?: MarketDataValidatorConfig) {
+    this.config = {
+      maxTimestampAgeMs: config?.maxTimestampAgeMs ?? 180_000,
+      timestampFreezeToleranceMs: config?.timestampFreezeToleranceMs ?? 30_000,
+      minVolatilityThreshold: config?.minVolatilityThreshold ?? 0.00001,
+      maxStaticCycles: config?.maxStaticCycles ?? 2,
+      maxStaticDurationMs: config?.maxStaticDurationMs ?? 45_000
+    };
+  }
+
+  validate(tickers: any[], now = Date.now()): MarketDataValidationResult {
+    const result = validateBinanceMarketData(tickers, this.previousSnapshot, {
+      ...this.config,
+      now,
+      previousTimestamp: this.previousTimestamp,
+      previousCheckedAt: this.previousCheckedAt,
+      staticSinceTimestamp: this.staticSinceTimestamp,
+      consecutiveStaticCycles: this.consecutiveStaticCycles
+    });
+
+    // Atualiza contadores internos
+    this.consecutiveStaticCycles = result.consecutiveStaticCycles;
+    if (this.consecutiveStaticCycles > 0) {
+      if (this.staticSinceTimestamp === null) {
+        this.staticSinceTimestamp = this.previousCheckedAt || now;
+      }
+    } else {
+      this.staticSinceTimestamp = null;
+    }
+
+    // Salva novo snapshot de preços
+    const nextSnapshot = new Map<string, number>();
+    let latestClose = 0;
+    for (const t of tickers) {
+      const sym = String(t.symbol || t.id || '');
+      const price = parseFloat(t.lastPrice ?? t.price ?? 0);
+      const ct = Number(t.closeTime ?? t.openTime ?? t.timestamp ?? 0);
+      if (sym && Number.isFinite(price) && price > 0) {
+        nextSnapshot.set(sym, price);
+      }
+      if (Number.isFinite(ct) && ct > latestClose) {
+        latestClose = ct;
+      }
+    }
+
+    this.previousSnapshot = nextSnapshot;
+    if (latestClose > 0) this.previousTimestamp = latestClose;
+    this.previousCheckedAt = now;
+    this.lastResult = result;
+
+    return result;
+  }
+
+  forceDemoMode(reason = 'Modo de simulação forçado pela validação de integridade'): void {
+    this.lastResult = {
+      isValid: false,
+      isDemoDataForced: true,
+      reason,
+      volatility: 0,
+      timestampAgeMs: 0,
+      isStaleTimestamp: false,
+      isStaticPrices: true,
+      consecutiveStaticCycles: this.config.maxStaticCycles,
+      lastCheckedAt: Date.now()
+    };
+  }
+
+  reset(): void {
+    this.previousSnapshot = null;
+    this.previousTimestamp = null;
+    this.previousCheckedAt = null;
+    this.staticSinceTimestamp = null;
+    this.consecutiveStaticCycles = 0;
+    this.lastResult = {
+      isValid: true,
+      isDemoDataForced: false,
+      volatility: 1,
+      timestampAgeMs: 0,
+      isStaleTimestamp: false,
+      isStaticPrices: false,
+      consecutiveStaticCycles: 0,
+      lastCheckedAt: Date.now()
+    };
+  }
+
+  isDemoDataForced(): boolean {
+    return this.lastResult.isDemoDataForced;
+  }
+
+  getLastResult(): MarketDataValidationResult {
+    return this.lastResult;
+  }
+}
+
+export const marketDataValidator = new MarketDataValidator();
+
 export class CryptoApiService implements MarketDataProvider {
   private fallbackAssets: CryptoAsset[] = INITIAL_ASSETS;
+  private marketValidator: MarketDataValidator = marketDataValidator;
   private binanceHealth: ExchangeHealth = {
     exchange: 'binance',
     status: 'OFFLINE_DEMO',
@@ -207,22 +514,44 @@ export class CryptoApiService implements MarketDataProvider {
         return asset;
       });
 
-      this.fallbackAssets = updated;
-      this.binanceHealth = {
-        exchange: 'binance',
-        status: 'CONNECTED',
-        statusLabel: 'Conectada (Ao Vivo)',
-        isImplemented: true,
-        isLive: true,
-        lastChecked: new Date().toLocaleTimeString('pt-BR')
-      };
+      // 3. Validação de integridade dos dados da Binance: compara timestamp e volatilidade
+      const validation = this.marketValidator.validate(rawData);
+      const isForcedDemo = !validation.isValid || validation.isDemoDataForced;
+
+      if (isForcedDemo) {
+        // Se os dados forem estáticos, congelados ou sem volatilidade, força isDemoData para true em toda a aplicação
+        for (const asset of updated) {
+          asset.isDemoData = true;
+        }
+        this.fallbackAssets = updated;
+        this.binanceHealth = {
+          exchange: 'binance',
+          status: 'OFFLINE_DEMO',
+          statusLabel: 'Dados em modo de simulação',
+          isImplemented: true,
+          isLive: false,
+          lastChecked: new Date().toLocaleTimeString('pt-BR'),
+          errorMessage: validation.reason || 'Dados estáticos ou sem variação detectada da Binance'
+        };
+      } else {
+        this.fallbackAssets = updated;
+        this.binanceHealth = {
+          exchange: 'binance',
+          status: 'CONNECTED',
+          statusLabel: 'Conectada (Ao Vivo)',
+          isImplemented: true,
+          isLive: true,
+          lastChecked: new Date().toLocaleTimeString('pt-BR')
+        };
+      }
 
       return updated;
     } catch (err: any) {
+      this.marketValidator.forceDemoMode(err?.message || 'Falha de conexão com a API pública da Binance');
       this.binanceHealth = {
         exchange: 'binance',
         status: 'OFFLINE_DEMO',
-        statusLabel: 'Demonstração (Offline)',
+        statusLabel: 'Dados em modo de simulação',
         isImplemented: true,
         isLive: false,
         lastChecked: new Date().toLocaleTimeString('pt-BR'),
@@ -244,6 +573,8 @@ export class CryptoApiService implements MarketDataProvider {
   async fetchAssetsBySymbols(symbols: string[]): Promise<CryptoAsset[]> {
     const unique = Array.from(new Set(symbols.filter((x) => /^[A-Z0-9]{3,20}USDT$/.test(x))));
     const out: CryptoAsset[] = [];
+    const forceDemo = this.marketValidator.isDemoDataForced();
+
     for (let i = 0; i < unique.length; i += 50) {
       const chunk = encodeURIComponent(JSON.stringify(unique.slice(i, i + 50)));
       for (const host of ['https://data-api.binance.vision', 'https://api.binance.com']) {
@@ -273,7 +604,7 @@ export class CryptoApiService implements MarketDataProvider {
               exchanges: ['binance'],
               sparkline: [price],
               lastUpdated: new Date().toLocaleTimeString('pt-BR'),
-              isDemoData: false
+              isDemoData: forceDemo
             });
           }
           break;
@@ -393,10 +724,37 @@ export class CryptoApiService implements MarketDataProvider {
    * A Bybit é explicitamente reportada como NÃO implementada.
    */
   async checkExchangeHealth(): Promise<{ binance: ExchangeHealth; bybit: ExchangeHealth }> {
+    const binance = { ...this.binanceHealth };
+    if (this.marketValidator.isDemoDataForced()) {
+      binance.status = 'OFFLINE_DEMO';
+      binance.statusLabel = 'Dados em modo de simulação';
+      binance.isLive = false;
+    }
     return {
-      binance: { ...this.binanceHealth },
+      binance,
       bybit: { ...this.bybitHealth }
     };
+  }
+
+  /**
+   * Retorna o status detalhado da última validação de dados da Binance.
+   */
+  getDataValidationStatus(): MarketDataValidationResult {
+    return this.marketValidator.getLastResult();
+  }
+
+  /**
+   * Indica se a aplicação foi forçada para o modo de simulação devido a dados estáticos ou erro.
+   */
+  isSimulationMode(): boolean {
+    return this.marketValidator.isDemoDataForced();
+  }
+
+  /**
+   * Permite redefinir ou injetar uma instância customizada do validador (útil para auditoria e testes).
+   */
+  setValidator(validator: MarketDataValidator): void {
+    this.marketValidator = validator;
   }
 }
 

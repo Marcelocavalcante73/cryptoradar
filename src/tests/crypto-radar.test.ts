@@ -29,7 +29,9 @@ import {
 import {
   apiService,
   parseBinanceKline,
-  timeframeToBinanceInterval
+  timeframeToBinanceInterval,
+  validateBinanceMarketData,
+  MarketDataValidator
 } from '../services/apiService';
 
 import {
@@ -665,6 +667,90 @@ const csv = historyToCsv([closed('a', 4.9), closed('b', -2.1, 'STOP_LOSS'), clos
 const lines = csv.split('\n');
 assert(lines.length === 3, 'CSV: cabeçalho + 2 operações (canceladas ficam de fora)', `linhas=${lines.length}`);
 assert(lines[0].startsWith('abertura,fechamento,moeda') && lines[1].includes('BTCUSDT') && lines[1].includes('Alvo') && lines[2].includes('Stop'), 'CSV traz moeda, motivo e resultado');
+
+// ============================================================================
+// 11. AUDITORIA DE VALIDAÇÃO DE DADOS, TIMESTAMPS E VOLATILIDADE DA BINANCE
+// ============================================================================
+console.log('\n--- 11. Validação de Dados, Timestamps e Volatilidade (Binance) ---');
+
+const now = 1_700_000_000_000;
+
+// 11.1 Lista vazia é rejeitada e força modo simulação
+const emptyVal = validateBinanceMarketData([], null, { now });
+assert(emptyVal.isValid === false, 'Lista vazia de tickers é invalidada');
+assert(emptyVal.isDemoDataForced === true, 'Lista vazia força modo de simulação (isDemoDataForced = true)');
+
+// 11.2 Timestamp desatualizado (> 180s)
+const staleTickers = [
+  { symbol: 'BTCUSDT', lastPrice: '60000', highPrice: '61000', lowPrice: '59000', closeTime: now - 300_000 }
+];
+const staleVal = validateBinanceMarketData(staleTickers, null, { now, maxTimestampAgeMs: 180_000 });
+assert(staleVal.isValid === false, 'Timestamp com 300s de atraso é invalidado');
+assert(staleVal.isStaleTimestamp === true, 'Sinaliza isStaleTimestamp = true');
+assert(staleVal.isDemoDataForced === true, 'Timestamp atrasado força isDemoDataForced = true');
+
+// 11.3 Volatilidade nula (high === low em 100% dos ativos)
+const flatTickers = [
+  { symbol: 'BTCUSDT', lastPrice: '60000', highPrice: '60000', lowPrice: '60000', closeTime: now - 1000 },
+  { symbol: 'ETHUSDT', lastPrice: '3000', highPrice: '3000', lowPrice: '3000', closeTime: now - 1000 }
+];
+const flatVal = validateBinanceMarketData(flatTickers, null, { now });
+assert(flatVal.isValid === false, 'Mercado sem amplitude (high == low) é invalidado');
+assert(flatVal.isDemoDataForced === true, 'Volatilidade nula força isDemoDataForced = true');
+assert(flatVal.volatility === 0, 'Volatilidade calculada é rigorosamente 0');
+
+// 11.4 Preços reais com volatilidade saudável e timestamp fresco são aceitos
+const liveTickers = [
+  { symbol: 'BTCUSDT', lastPrice: '65400', highPrice: '66500', lowPrice: '64800', closeTime: now - 5000 },
+  { symbol: 'ETHUSDT', lastPrice: '3500', highPrice: '3580', lowPrice: '3440', closeTime: now - 5000 }
+];
+const liveVal = validateBinanceMarketData(liveTickers, null, { now });
+assert(liveVal.isValid === true, 'Dados com volatilidade normal e timestamp recente são válidos');
+assert(liveVal.isDemoDataForced === false, 'Não força modo de simulação em dados vivos e dinâmicos');
+assert(liveVal.volatility > 0.01, 'Métrica de volatilidade calculada reflete a variação do mercado');
+
+// 11.5 Validador com estado: detecção de dados estáticos ao longo de ciclos
+const validator = new MarketDataValidator({ maxStaticCycles: 2, maxStaticDurationMs: 45_000 });
+
+// Ciclo 1: preços normais
+const cycle1 = validator.validate(liveTickers, now);
+assert(cycle1.isValid === true, 'Ciclo 1: dados iniciais aceitos');
+assert(validator.isDemoDataForced() === false, 'Validador não força demo no primeiro ciclo');
+
+// Ciclo 2: exatamente os mesmos preços (1º ciclo estático)
+const cycle2 = validator.validate(liveTickers, now + 15_000);
+assert(cycle2.consecutiveStaticCycles === 1, 'Ciclo 2: detecta 1º ciclo de preços idênticos');
+
+// Ciclo 3: exatamente os mesmos preços novamente (atinge o limite de 2 ciclos estáticos)
+const cycle3 = validator.validate(liveTickers, now + 30_000);
+assert(cycle3.consecutiveStaticCycles === 2, 'Ciclo 3: atinge o limite máximo de ciclos estáticos');
+assert(cycle3.isValid === false, 'Ciclo 3: invalida os dados por estagnação');
+assert(cycle3.isDemoDataForced === true, 'Ciclo 3: força modo de simulação em dados estáticos');
+assert(validator.isDemoDataForced() === true, 'Validador confirma estado de simulação ativo');
+
+// Ciclo 4: mercado volta a se mover com novos preços
+const dynamicTickers = [
+  { symbol: 'BTCUSDT', lastPrice: '65750', highPrice: '66500', lowPrice: '64800', closeTime: now + 45_000 },
+  { symbol: 'ETHUSDT', lastPrice: '3520', highPrice: '3580', lowPrice: '3440', closeTime: now + 45_000 }
+];
+const cycle4 = validator.validate(dynamicTickers, now + 45_000);
+assert(cycle4.isValid === true, 'Ciclo 4: mercado se movimenta e recupera status válido');
+assert(cycle4.isDemoDataForced === false, 'Ciclo 4: cessa a exigência de modo de simulação');
+assert(cycle4.consecutiveStaticCycles === 0, 'Contador de ciclos estáticos é zerado');
+
+// 11.6 Integração com o apiService e diagnóstico de saúde
+validator.forceDemoMode('Teste de auditoria: congelamento forçado');
+apiService.setValidator(validator);
+assert(apiService.isSimulationMode() === true, 'apiService reporta modo de simulação ativo quando validador força demo');
+
+const healthAfterForcedDemo = await apiService.checkExchangeHealth();
+assert(healthAfterForcedDemo.binance.status === 'OFFLINE_DEMO', 'Saúde da Binance transiciona para OFFLINE_DEMO');
+assert(healthAfterForcedDemo.binance.statusLabel === 'Dados em modo de simulação', 'Rótulo de status exibe explicitamente "Dados em modo de simulação"');
+assert(healthAfterForcedDemo.binance.isLive === false, 'isLive torna-se false em modo de simulação');
+
+// Restaura validador limpo
+validator.reset();
+assert(validator.isDemoDataForced() === false, 'Reset do validador restaura estado limpo');
 
 console.log('\n========================================================');
 console.log(`TOTAL DE TESTES EXECUTADOS: ${totalTests}`);

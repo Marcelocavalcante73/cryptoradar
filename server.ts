@@ -19,7 +19,17 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = Number(process.env.PORT) || 3000;
+function getPort(): number {
+  const args = process.argv;
+  const portIndex = args.indexOf('--port');
+  if (portIndex !== -1 && args[portIndex + 1]) {
+    const parsed = Number(args[portIndex + 1]);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return Number(process.env.PORT) || 3000;
+}
+
+const PORT = getPort();
 
 app.use(express.json());
 

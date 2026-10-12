@@ -32,6 +32,8 @@ export default function App() {
 
   const [isFetching, setIsFetching] = useState(false);
   const [isLive, setIsLive] = useState(false);
+  const [isDemoMode, setIsDemoMode] = useState(false);
+  const [demoReason, setDemoReason] = useState<string | null>(null);
 
   // Refs com o estado mais recente, para uso dentro de callbacks assíncronos
   const isUpdatingRef = useRef(false);
@@ -65,8 +67,14 @@ export default function App() {
       const extraAssets = extra.size ? await apiService.fetchAssetsBySymbols(Array.from(extra)) : [];
       const data = [...base, ...extraAssets];
 
+      const validation = apiService.getDataValidationStatus();
+      const forcedDemo = validation.isDemoDataForced || !validation.isValid;
+      const isSimulationActive = forcedDemo || data.every((a) => a.isDemoData);
+
       setAssets(data);
-      setIsLive(base.some((a) => !a.isDemoData));
+      setIsLive(!isSimulationActive && data.some((a) => !a.isDemoData));
+      setIsDemoMode(isSimulationActive);
+      setDemoReason(forcedDemo ? (validation.reason || null) : null);
       setSelectedCoin((prev) => data.find((a) => a.symbol === prev.symbol) || prev);
 
       // Stop e alvo das posições simuladas, só com preços reais
@@ -203,6 +211,7 @@ export default function App() {
       <div className="w-full max-w-2xl min-h-screen flex flex-col">
         <Header
           isLive={isLive}
+          isDemoData={isDemoMode}
           isFetching={isFetching}
           onRefresh={refreshPrices}
           onOpenSettings={() => goTo('settings')}
@@ -217,6 +226,8 @@ export default function App() {
               onSimulate={(s) => setTrade({ asset: findAsset(s.symbol, s.entryPrice), signal: s })}
               onClosePosition={handleClosePosition}
               onSelectCoinBySymbol={handleSelectCoinBySymbol}
+              isDemoData={isDemoMode}
+              demoReason={demoReason}
             />
           )}
 
