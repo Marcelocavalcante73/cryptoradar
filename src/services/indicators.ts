@@ -271,6 +271,56 @@ export function calculateMACD(
 }
 
 /**
+ * Cálculo de Bandas de Bollinger (BB 20, 2):
+ * - Banda Média: Média Móvel Simples de 20 períodos
+ * - Desvio Padrão populacional dos últimos 20 períodos
+ * - Banda Superior: Média + (desvio * 2)
+ * - Banda Inferior: Média - (desvio * 2)
+ */
+export function calculateBollingerBands(
+  candles: CandleData[],
+  period: number = 20,
+  multiplier: number = 2,
+  decimals: number = 2
+): CandleData[] {
+  const result = candles.map((c) => ({ ...c }));
+  if (result.length < period) {
+    return result;
+  }
+
+  for (let i = 0; i < result.length; i++) {
+    if (i < period - 1) {
+      result[i].bollinger = undefined;
+      continue;
+    }
+
+    let sum = 0;
+    for (let j = i - period + 1; j <= i; j++) {
+      sum += result[j].close;
+    }
+    const middle = sum / period;
+
+    let varianceSum = 0;
+    for (let j = i - period + 1; j <= i; j++) {
+      const diff = result[j].close - middle;
+      varianceSum += diff * diff;
+    }
+    const stdDev = Math.sqrt(varianceSum / period);
+
+    const upper = middle + stdDev * multiplier;
+    const lower = middle - stdDev * multiplier;
+
+    result[i].bollinger = {
+      upper: Number(upper.toFixed(decimals)),
+      middle: Number(middle.toFixed(decimals)),
+      lower: Number(lower.toFixed(decimals))
+    };
+  }
+
+  return result;
+}
+
+/**
  * Agrupa o cálculo de todos os indicadores técnicos sobre as velas.
  */
 export function calculateAllIndicators(candles: CandleData[], decimals: number = 2): CandleData[] {
@@ -278,6 +328,7 @@ export function calculateAllIndicators(candles: CandleData[], decimals: number =
   processed = calculateEMA(processed, 50, decimals);
   processed = calculateWilderRSI(processed, 14);
   processed = calculateMACD(processed, 12, 26, 9, decimals);
+  processed = calculateBollingerBands(processed, 20, 2, decimals);
   return processed;
 }
 

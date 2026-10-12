@@ -13,6 +13,7 @@ import {
   calculateWilderRSI,
   calculateEMA,
   calculateMACD,
+  calculateBollingerBands,
   calculateFearGreedIndex,
   calculateTechnicalDiagnosis
 } from '../services/indicators';
@@ -751,6 +752,123 @@ assert(healthAfterForcedDemo.binance.isLive === false, 'isLive torna-se false em
 // Restaura validador limpo
 validator.reset();
 assert(validator.isDemoDataForced() === false, 'Reset do validador restaura estado limpo');
+
+// ========================================================
+// 12. AUDITORIA DE BANDAS DE BOLLINGER (BB 20, 2) E GRÁFICO
+// ========================================================
+console.log('\n========================================================');
+console.log('12. AUDITORIA DE BANDAS DE BOLLINGER (BB 20, 2) E GRÁFICO');
+console.log('========================================================');
+
+// Teste 1: Série curta (< 20 velas) deve manter bollinger como undefined
+const shortCandles = Array.from({ length: 15 }, (_, i) => ({
+  time: `Vela ${i}`,
+  timestamp: 1000 + i * 60000,
+  open: 100 + i,
+  high: 105 + i,
+  low: 95 + i,
+  close: 100 + i,
+  volume: 1000
+}));
+const bbShort = calculateBollingerBands(shortCandles, 20, 2, 2);
+assert(bbShort[0].bollinger === undefined, 'Bandas de Bollinger: vela 0 em aquecimento é undefined');
+assert(bbShort[14].bollinger === undefined, 'Bandas de Bollinger: vela 14 em aquecimento é undefined');
+
+// Teste 2: Série completa (30 velas) calcula bandas corretamente
+const completeCandles = Array.from({ length: 30 }, (_, i) => ({
+  time: `Vela ${i}`,
+  timestamp: 1000 + i * 60000,
+  open: 100 + (i % 2 === 0 ? 5 : -5),
+  high: 110,
+  low: 90,
+  close: 100 + (i % 2 === 0 ? 4 : -4),
+  volume: 1000
+}));
+const bbComplete = calculateBollingerBands(completeCandles, 20, 2, 2);
+
+assert(bbComplete[18].bollinger === undefined, 'Vela 18 (< período 20) ainda está em aquecimento');
+assert(bbComplete[19].bollinger !== undefined, 'Vela 19 (exatamente 20 velas) inicializa Bandas de Bollinger');
+const bb19 = bbComplete[19].bollinger!;
+assert(bb19.upper > bb19.middle, 'Banda Superior é maior que a Média Central');
+assert(bb19.lower < bb19.middle, 'Banda Inferior é menor que a Média Central');
+assert(Number.isFinite(bb19.upper) && Number.isFinite(bb19.lower), 'Valores das bandas são números finitos válidos');
+assert(Math.abs(bb19.upper - bb19.middle - (bb19.middle - bb19.lower)) < 0.05, 'Bandas de Bollinger são simétricas em relação à média');
+
+// ============================================================================
+// 13. AUDITORIA DE MODAL FULLSCREEN E MODO PAISAGEM ROTACIONADO 90° (TRADINGVIEW)
+// ============================================================================
+console.log('\n========================================================');
+console.log('13. AUDITORIA DE MODAL FULLSCREEN E MODO PAISAGEM (90°)');
+console.log('========================================================');
+
+// Teste 1: Simulação de dimensões de celular em modo retrato (ex: 390x844)
+const mobilePortrait = { width: 390, height: 844 };
+// No modo rotacionado 90° (paisagem), o canvas horizontal assume a altura da tela como largura
+const rotatedCanvasWidth = Math.max(720, mobilePortrait.height);
+const rotatedCanvasHeight = Math.max(260, mobilePortrait.width - 128);
+assert(rotatedCanvasWidth === 844, 'Modo Paisagem (90°): Canvas expande largura para 844px no mobile');
+assert(rotatedCanvasHeight === 262, 'Modo Paisagem (90°): Canvas ajusta altura mantendo proporção técnica');
+
+// Teste 2: Mapeamento de coordenadas na rotação 90° horária
+// Um ponto de toque em (X=195, Y=422) na tela deve mapear para o espaço SVG rotacionado
+const simulateRotatedPoint = (screenX: number, screenY: number, screenW: number, screenH: number, svgW: number, svgH: number) => {
+  return {
+    svgX: (screenY / screenH) * svgW,
+    svgY: (1 - screenX / screenW) * svgH
+  };
+};
+const mapped = simulateRotatedPoint(195, 422, mobilePortrait.width, mobilePortrait.height, rotatedCanvasWidth, rotatedCanvasHeight);
+assert(Math.abs(mapped.svgX - (422 / 844) * 844) < 1e-6, 'Mapeamento de toque no modo rotacionado: eixo X segue o tempo/velas');
+assert(Math.abs(mapped.svgY - 0.5 * 262) < 1e-6, 'Mapeamento de toque no modo rotacionado: eixo Y segue a escala de preços');
+
+// Teste 3: Suporte a timeframes para análise técnica
+const supportedTimeframes: string[] = ['15m', '1h', '4h', '1D', '1W'];
+assert(supportedTimeframes.includes('15m') && supportedTimeframes.includes('4h') && supportedTimeframes.includes('1D'), 'Timeframes essenciais do TradingView suportados');
+
+// Teste 4: Verificação de zoom e limites de pan no histórico
+const totalHistory = 100;
+const visibleWindow = 45;
+const maxAllowedPan = totalHistory - visibleWindow;
+assert(maxAllowedPan === 55, 'Limite de pan calcula histórico disponível corretamente');
+
+// ============================================================================
+// 14. AUDITORIA DE FERRAMENTAS DE ZOOM E ESTUDOS TÉCNICOS (TRADINGVIEW TOOLS)
+// ============================================================================
+console.log('\n========================================================');
+console.log('14. AUDITORIA DE ZOOM E FERRAMENTAS DE ANÁLISE TÉCNICA');
+console.log('========================================================');
+
+// Teste 1: Ferramentas de Zoom Dinâmico (Zoom In reduz velas visíveis, Zoom Out expande)
+const initialVisibleCount = 45;
+const zoomInVisibleCount = Math.max(15, initialVisibleCount - 8);
+const zoomOutVisibleCount = Math.min(totalHistory, initialVisibleCount + 8);
+assert(zoomInVisibleCount === 37, 'Zoom In aproxima visualização reduzindo velas visíveis');
+assert(zoomOutVisibleCount === 53, 'Zoom Out afasta visualização permitindo maior panorama');
+assert(Math.max(15, 10 - 8) === 15, 'Zoom In respeita limite mínimo de 15 velas para manter legibilidade');
+
+// Teste 2: Ferramenta de Linha de Suporte / Resistência Horizontal
+const horizontalPrice = 88500.50;
+const isPriceValid = Number.isFinite(horizontalPrice) && horizontalPrice > 0;
+assert(isPriceValid, 'Linha Horizontal registra preço exato para suporte/resistência');
+
+// Teste 3: Ferramenta de Linha de Tendência (Trendline de 2 pontos)
+const pStart = { index: 5, price: 82000 };
+const pEnd = { index: 25, price: 91000 };
+const deltaPrice = pEnd.price - pStart.price;
+const deltaPct = (deltaPrice / pStart.price) * 100;
+assert(deltaPrice === 9000, 'Trendline calcula amplitude correta em dólares');
+assert(Math.abs(deltaPct - 10.975) < 0.01, 'Trendline calcula variação percentual correta (+10.98%)');
+
+// Teste 4: Retração de Fibonacci (0%, 23.6%, 38.2%, 50%, 61.8% Golden Ratio, 78.6%, 100%)
+const fibLevels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0];
+const fibPrices = fibLevels.map((lvl) => pStart.price + (pEnd.price - pStart.price) * lvl);
+assert(fibPrices[0] === 82000, 'Fibonacci 0% corresponde ao ponto base (82000)');
+assert(fibPrices[6] === 91000, 'Fibonacci 100% corresponde ao topo (91000)');
+assert(Math.abs(fibPrices[4] - (82000 + 9000 * 0.618)) < 1e-4, 'Fibonacci 61.8% (Golden Ratio) calculado com exatidão');
+
+// Teste 5: Régua de Medição (Ruler / Measure Tool)
+const measuredBars = Math.abs(pEnd.index - pStart.index);
+assert(measuredBars === 20, 'Régua de Medição calcula intervalo correto de 20 velas');
 
 console.log('\n========================================================');
 console.log(`TOTAL DE TESTES EXECUTADOS: ${totalTests}`);

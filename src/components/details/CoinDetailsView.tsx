@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Maximize2, RotateCw } from 'lucide-react';
 import { CryptoAsset, CandleData, Timeframe } from '../../types/crypto';
 import { apiService } from '../../services/apiService';
 import { calculateTechnicalDiagnosis } from '../../services/indicators';
@@ -12,19 +12,21 @@ interface CoinDetailsViewProps {
   onOpenTradeModal: (asset: CryptoAsset) => void;
 }
 
-const TIMEFRAMES: Timeframe[] = ['1h', '4h', '1D'];
+const TIMEFRAMES: Timeframe[] = ['15m', '1h', '4h', '1D', '1W'];
 
 export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, onBack, onOpenTradeModal }) => {
   const [timeframe, setTimeframe] = useState<Timeframe>('4h');
   const [candles, setCandles] = useState<CandleData[]>([]);
   const [live, setLive] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [isChartExpanded, setIsChartExpanded] = useState(false);
+  const [isChartRotated, setIsChartRotated] = useState(false);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     apiService
-      .fetchHistoricalKlines(asset.symbol, timeframe, asset, 80)
+      .fetchHistoricalKlines(asset.symbol, timeframe, asset, 120)
       .then((res) => {
         if (!active) return;
         // Nunca mostra velas sintéticas como se fossem reais
@@ -45,8 +47,8 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, onBack,
 
   return (
     <div className="space-y-4 pb-28">
-      <button onClick={onBack} className="flex items-center gap-2 text-sm text-slate-300 py-1">
-        <ArrowLeft className="w-4 h-4" /> Mercado
+      <button onClick={onBack} className="flex items-center gap-2 text-sm text-slate-300 py-1 hover:text-white transition-colors">
+        <ArrowLeft className="w-4 h-4" /> Voltar ao Mercado
       </button>
 
       <div>
@@ -57,31 +59,67 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, onBack,
         </div>
       </div>
 
-      <div className="inline-flex bg-[#161920] border border-[#23272f] rounded-lg p-0.5">
-        {TIMEFRAMES.map((tf) => (
-          <button
-            key={tf}
-            onClick={() => setTimeframe(tf)}
-            className={`px-4 py-1.5 text-sm rounded-md ${timeframe === tf ? 'bg-[#2a2f3a] text-slate-100' : 'text-slate-400'}`}
-          >
-            {tf}
-          </button>
-        ))}
-      </div>
-
       {loading ? (
-        <p className="text-sm text-slate-400 py-10 text-center">Carregando gráfico…</p>
+        <div className="bg-[#111622] border border-slate-800 rounded-2xl p-12 text-center">
+          <p className="text-sm text-slate-400 animate-pulse">Carregando dados históricos da Binance…</p>
+        </div>
       ) : live ? (
         <>
+          {/* Barra de Acesso Rápido ao Gráfico TradingView & Fullscreen Mobile */}
+          <div className="flex items-center justify-between gap-2 flex-wrap bg-[#111622] p-2.5 rounded-xl border border-slate-800">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="text-xs font-semibold text-slate-200">Gráfico Interativo Binance</span>
+              <span className="text-[11px] text-slate-400 hidden sm:inline">· TradingView Guide</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => {
+                  setIsChartRotated(true);
+                  setIsChartExpanded(true);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600/20 hover:bg-purple-600/30 text-purple-200 border border-purple-500/30 rounded-lg text-xs font-medium transition-all"
+                title="Abrir no modo paisagem rotacionado horizontalmente a 90° (otimizado para telas pequenas)"
+              >
+                <RotateCw className="w-3.5 h-3.5" />
+                <span>Modo Paisagem (90°)</span>
+              </button>
+              <button
+                onClick={() => {
+                  setIsChartRotated(false);
+                  setIsChartExpanded(true);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 rounded-lg text-xs font-medium transition-all"
+                title="Expandir gráfico em tela cheia (Fullscreen)"
+              >
+                <Maximize2 className="w-3.5 h-3.5" />
+                <span>Fullscreen</span>
+              </button>
+            </div>
+          </div>
+
           <CandlestickChart
             candles={candles}
+            assetSymbol={asset.symbol}
+            assetName={asset.name}
+            currentPrice={asset.price}
+            priceChange24h={asset.change24h}
+            timeframe={timeframe}
+            onChangeTimeframe={(tf) => setTimeframe(tf)}
+            onOpenTradeModal={() => onOpenTradeModal(asset)}
             chartType="candle"
-            showEma20
-            showEma50
-            showVolume={false}
+            showEma20={true}
+            showEma50={true}
+            showBollinger={false}
+            showVolume={true}
             showRsi={false}
             showMacd={false}
-            height={300}
+            height={340}
+            isExpandable={true}
+            isExpanded={isChartExpanded}
+            onToggleExpand={(exp) => setIsChartExpanded(exp)}
+            isRotated={isChartRotated}
+            onToggleRotate={(rot) => setIsChartRotated(rot)}
           />
           <div className="bg-[#161920] border border-[#23272f] rounded-xl p-4">
             <div className="text-sm text-slate-400">Leitura técnica ({timeframe})</div>

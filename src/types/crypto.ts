@@ -42,6 +42,11 @@ export interface CandleData {
     signal: number;
     histogram: number;
   };
+  bollinger?: {
+    upper: number;
+    middle: number;
+    lower: number;
+  };
 }
 
 export type SignalStrategy = 
