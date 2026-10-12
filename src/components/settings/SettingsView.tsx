@@ -61,6 +61,24 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, scanInfo, 
       </section>
 
       <section className={card}>
+        <h3 className="text-sm font-medium text-slate-300 mb-1">Capital real (opcional)</h3>
+        <div className={row}>
+          <span className="text-slate-200">Capital para operar (USDT)</span>
+          <input className={input} inputMode="decimal" defaultValue={settings.realCapital || ''} placeholder="0"
+            onBlur={(e) => onSaveSettings({ ...settings, realCapital: num(e.target.value, 0, 100000000, settings.realCapital || 0) })} />
+        </div>
+        <div className={row}>
+          <span className="text-slate-200">Risco por operação (%)</span>
+          <input className={input} inputMode="decimal" defaultValue={settings.realRiskPercent ?? 1}
+            onBlur={(e) => onSaveSettings({ ...settings, realRiskPercent: num(e.target.value, 0.1, 5, settings.realRiskPercent ?? 1) })} />
+        </div>
+        <p className="text-xs text-slate-500 leading-relaxed">
+          Só serve para sugerir o tamanho da compra em cada sinal. O app não envia ordens: você opera na corretora, sempre com o stop.
+          Comece com um valor que possa perder por inteiro.
+        </p>
+      </section>
+
+      <section className={card}>
         <h3 className="text-sm font-medium text-slate-300 mb-1">App</h3>
         <div className={row}>
           <span className="text-slate-200">Atualizar preços a cada</span>

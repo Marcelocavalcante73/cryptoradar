@@ -153,4 +153,6 @@ export interface AppSettings {
   risk: RiskSettings;
   exchange: ExchangeConfig;
   telegram: TelegramConfig;
+  realCapital?: number;        // capital real (USDT) usado só para sugerir tamanho de posição; 0/ausente = desligado
+  realRiskPercent?: number;    // % do capital real arriscado por operação (padrão 1)
 }

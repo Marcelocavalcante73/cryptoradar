@@ -223,6 +223,8 @@ export default function App() {
               scanInfo={scanInfo}
               signals={signals}
               account={paperAccount}
+              realCapital={settings.realCapital}
+              realRiskPercent={settings.realRiskPercent}
               onSimulate={(s) => setTrade({ asset: findAsset(s.symbol, s.entryPrice), signal: s })}
               onClosePosition={handleClosePosition}
               onSelectCoinBySymbol={handleSelectCoinBySymbol}

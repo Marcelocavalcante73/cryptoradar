@@ -1,7 +1,8 @@
 import React, { useState, useMemo } from 'react';
 import { TechnicalSignal, PaperAccount } from '../../types/crypto';
 import { PerformancePanel } from './PerformancePanel';
-import { fmtPrice, timeAgo } from '../common/format';
+import { fmtPrice, fmtUsd, timeAgo } from '../common/format';
+import { suggestAmount } from '../paperTrading/TradeSheet';
 
 export interface ScanInfo {
   lastScanAt: number | null;
@@ -22,6 +23,8 @@ interface SignalsViewProps {
   scanInfo?: ScanInfo | null;
   signals: TechnicalSignal[];
   account: PaperAccount;
+  realCapital?: number;
+  realRiskPercent?: number;
   onSimulate: (signal: TechnicalSignal) => void;
   onClosePosition: (positionId: string) => void;
   onSelectCoinBySymbol: (symbol: string) => void;
@@ -47,6 +50,8 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
   scanInfo,
   signals,
   account,
+  realCapital = 0,
+  realRiskPercent = 1,
   onSimulate,
   onClosePosition,
   onSelectCoinBySymbol,
@@ -150,6 +155,17 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
                     ))}
                   </div>
                 )}
+
+                {s.status === 'OPEN' && !exitOnly && realCapital > 0 && (() => {
+                  const size = suggestAmount(realCapital, s.entryPrice, s.stopLossPrice, realRiskPercent);
+                  const loss = size * ((s.entryPrice - s.stopLossPrice) / s.entryPrice);
+                  return size > 0 ? (
+                    <p className="text-sm text-slate-300 mt-3 bg-[#0f1115] border border-[#23272f] rounded-lg px-3 py-2">
+                      Para {fmtUsd(realCapital)}: comprar ≈ <span className="font-medium text-slate-100">{fmtUsd(size)}</span>
+                      <span className="text-slate-500"> · perde ≈ {fmtUsd(loss)} se bater o stop</span>
+                    </p>
+                  ) : null;
+                })()}
 
                 <div className="flex items-center justify-between mt-4">
                   <span className="text-xs text-slate-500">{resultLabel ? `${resultLabel} · ${when}` : when}</span>

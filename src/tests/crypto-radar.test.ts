@@ -45,7 +45,7 @@ import { calculateAllIndicators, calculateATR } from '../services/indicators';
 import { runBacktest, computeStats, BacktestTrade } from '../services/backtest';
 import { buildUniverse } from '../../server/universe';
 import { formatTelegramAlert } from '../../server/scanner';
-import { computeSignalPerformance, signalResultR, PerfSignal } from '../services/signalPerformance';
+import { computeSignalPerformance, signalResultR, evaluateReadiness, PerfSignal } from '../services/signalPerformance';
 import { suggestAmount } from '../components/paperTrading/TradeSheet';
 import { historyToCsv } from '../components/paperTrading/WalletView';
 import { evaluateSignal, scoreCandles, MIN_SCORE } from '../services/signalEngine';
@@ -878,6 +878,34 @@ console.log('\n--- Precisão de preço ---');
 const pepeKline = parseBinanceKline([1700000000000, '0.00001234', '0.00001300', '0.00001200', '0.00001250', '9999999'], '1h', priceDecimals(0.0000125));
 assert(pepeKline !== null && pepeKline.close === 0.0000125 && pepeKline.open === 0.00001234, 'Moeda de preço ~0,00001 mantém precisão (antes virava 0 e era descartada)');
 assert(priceDecimals(64000) === 2 && priceDecimals(150) === 4 && priceDecimals(0.5) === 6 && priceDecimals(0.00001) === 10, 'Casas decimais por faixa de preço');
+
+// ============================================================================
+// SEMÁFORO "PRONTO PARA VALOR REAL?"
+// ============================================================================
+console.log('\n--- Semáforo de validação ---');
+const DAY = 86400000;
+const t0 = Date.now();
+const batch = (wins: number, losses: number, ageDays: number): PerfSignal[] => [
+  ...Array.from({ length: wins }, (_, i) => mkSig({ id: `w${i}`, status: 'TARGET_HIT', createdAt: t0 - ageDays * DAY + i })),
+  ...Array.from({ length: losses }, (_, i) => mkSig({ id: `l${i}`, status: 'STOP_HIT', createdAt: t0 - ageDays * DAY + 1000 + i }))
+];
+
+assert(evaluateReadiness([]).status === 'collecting', 'Sem sinais: ainda coletando');
+assert(evaluateReadiness(batch(3, 1, 5), t0).status === 'collecting', 'Poucos sinais positivos: ainda coletando (não libera)');
+const good = evaluateReadiness(batch(12, 18, 30), t0);
+assert(good.status === 'ready' && good.checks.every((c) => c.ok), '30 sinais / 30 dias, expectativa +0,45R e fator 1,65 => pronto para valor pequeno');
+const bad = evaluateReadiness(batch(8, 22, 30), t0);
+assert(bad.status === 'failed' && bad.headline.includes('Não opere'), '30 sinais / 30 dias com resultado negativo => reprovado');
+assert(evaluateReadiness(batch(12, 18, 10), t0).status !== 'ready', 'Bom resultado mas só 10 dias => ainda não libera');
+assert(evaluateReadiness(batch(5, 15, 5), t0).status === 'almost', 'Resultado negativo cedo => alerta para continuar só simulando');
+// Dependência de poucos acertos: 3 grandes ganhos e o resto perdendo
+const lucky = [
+  ...Array.from({ length: 3 }, (_, i) => mkSig({ id: `x${i}`, status: 'TARGET_HIT', createdAt: t0 - 30 * DAY + i })),
+  ...Array.from({ length: 27 }, (_, i) => mkSig({ id: `y${i}`, status: 'EXPIRED', closePrice: 99.9, createdAt: t0 - 30 * DAY + 100 + i }))
+];
+const luckyRes = evaluateReadiness(lucky, t0);
+assert(luckyRes.checks[4].ok === false, 'Checagem "sem os 3 melhores" reprova quando poucos acertos sustentam o resultado');
+assert(evaluateReadiness(batch(12, 18, 30).map((x) => ({ ...x, isDemo: true })), t0).status === 'collecting', 'Sinais de demonstração nunca contam para o semáforo');
 
 console.log('\n========================================================');
 console.log(`TOTAL DE TESTES EXECUTADOS: ${totalTests}`);

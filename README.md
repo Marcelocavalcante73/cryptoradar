@@ -45,6 +45,10 @@ npm run backtest -- --tf 1h --top 30 --bars 2000
 
 Roda o motor no histórico real com taxa e derrapagem. Resultado passado não garante resultado futuro.
 
+## Antes de usar dinheiro real
+
+Leia o [plano de validação](docs/PLANO-DE-VALIDACAO.md). Em Sinais → *Desempenho dos sinais* há um semáforo que mostra, com base nos seus sinais reais, se os critérios mínimos já foram atingidos. O app não envia ordens: você opera na corretora e, em Ajustes → *Capital real*, informa seu capital para ver o tamanho sugerido em cada sinal de compra.
+
 ## Testes
 
 ```bash

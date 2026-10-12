@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { computeSignalPerformance, PerfGroup, PerfSignal, MIN_RELIABLE_SAMPLE } from '../../services/signalPerformance';
+import { computeSignalPerformance, evaluateReadiness, PerfGroup, PerfSignal, MIN_RELIABLE_SAMPLE } from '../../services/signalPerformance';
 import { pnlColor } from '../common/format';
 
 const fmtR = (n: number) => `${n > 0 ? '+' : n < 0 ? '−' : ''}${Math.abs(n).toFixed(2)}R`;
@@ -15,6 +15,7 @@ const Row: React.FC<{ g: PerfGroup }> = ({ g }) => (
 
 export const PerformancePanel: React.FC<{ signals: PerfSignal[] }> = ({ signals }) => {
   const perf = useMemo(() => computeSignalPerformance(signals), [signals]);
+  const readiness = useMemo(() => evaluateReadiness(signals), [signals]);
   if (perf.total === 0) return null;
 
   const groups = [...perf.byDirection, ...perf.byTimeframe, ...perf.byScore];
@@ -30,6 +31,27 @@ export const PerformancePanel: React.FC<{ signals: PerfSignal[] }> = ({ signals 
         </span>
       </summary>
       <div className="px-4 pb-4 text-sm">
+        <div className="mb-4 rounded-lg border border-[#23272f] p-3">
+          <div className="flex items-center gap-2">
+            <span
+              className={`w-2.5 h-2.5 rounded-full ${
+                readiness.status === 'ready' ? 'bg-emerald-400' : readiness.status === 'failed' ? 'bg-rose-400' : 'bg-amber-400'
+              }`}
+            />
+            <span className="text-slate-100 font-medium">Pronto para valor real?</span>
+          </div>
+          <p className="text-xs text-slate-400 mt-1 leading-relaxed">{readiness.headline}</p>
+          <ul className="mt-2 space-y-1">
+            {readiness.checks.map((c) => (
+              <li key={c.label} className="flex items-start justify-between gap-3 text-xs">
+                <span className={c.ok ? 'text-slate-300' : 'text-slate-500'}>{c.ok ? '✓' : '○'} {c.label}</span>
+                <span className="text-slate-400 tabular-nums shrink-0">{c.detail}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="text-[11px] text-slate-500 mt-2">Atingir os critérios não garante lucro futuro.</p>
+        </div>
+
         {!perf.reliable && (
           <p className="text-xs text-amber-300 mb-3 leading-relaxed">
             Apenas {perf.overall.resolved} sinais encerrados. Abaixo de {MIN_RELIABLE_SAMPLE}, estes números ainda não são confiáveis.
