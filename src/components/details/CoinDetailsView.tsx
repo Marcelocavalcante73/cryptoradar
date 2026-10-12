@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { ArrowLeft } from 'lucide-react';
-import { CryptoAsset, CandleData, Timeframe, TechnicalSignal } from '../../types/crypto';
+import { CryptoAsset, CandleData, Timeframe, TechnicalSignal, MarketType } from '../../types/crypto';
 import { apiService } from '../../services/apiService';
 import { calculateTechnicalDiagnosis } from '../../services/indicators';
 import { TvChart, ChartLevel } from './TvChart';
@@ -8,6 +8,7 @@ import { fmtPrice, fmtPct, pnlColor } from '../common/format';
 
 interface CoinDetailsViewProps {
   asset: CryptoAsset;
+  market?: MarketType;
   signals?: TechnicalSignal[];
   onBack: () => void;
   onOpenTradeModal: (asset: CryptoAsset) => void;
@@ -15,7 +16,7 @@ interface CoinDetailsViewProps {
 
 const TIMEFRAMES: Timeframe[] = ['15m', '1h', '4h', '1D', '1W'];
 
-export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, signals = [], onBack, onOpenTradeModal }) => {
+export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, market = 'spot', signals = [], onBack, onOpenTradeModal }) => {
   const [timeframe, setTimeframe] = useState<Timeframe>('4h');
   const [candles, setCandles] = useState<CandleData[]>([]);
   const [live, setLive] = useState(false);
@@ -24,8 +25,9 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, signals
   useEffect(() => {
     let active = true;
     setLoading(true);
-    apiService
-      .fetchHistoricalKlines(asset.symbol, timeframe, asset, 300)
+    (market === 'futures'
+      ? apiService.fetchFuturesKlines(asset.symbol, timeframe, 300)
+      : apiService.fetchHistoricalKlines(asset.symbol, timeframe, asset, 300))
       .then((res) => {
         if (!active) return;
         // Nunca mostra velas sintéticas como se fossem reais
@@ -35,7 +37,7 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, signals
       .catch(() => active && (setLive(false), setCandles([])))
       .finally(() => active && setLoading(false));
     return () => { active = false; };
-  }, [asset.symbol, timeframe]);
+  }, [asset.symbol, timeframe, market]);
 
   const diagnosis = useMemo(() => calculateTechnicalDiagnosis(candles), [candles]);
   const verdictColor =
@@ -44,7 +46,7 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, signals
 
   // Entrada, stop e alvo do sinal de compra aberto desta moeda, desenhados sobre o gráfico
   const levels = useMemo<ChartLevel[]>(() => {
-    const sig = signals.find((x) => x.symbol === asset.symbol && x.status === 'OPEN' && x.direction === 'LONG');
+    const sig = signals.find((x) => x.symbol === asset.symbol && x.status === 'OPEN' && (market === 'futures' || x.direction === 'LONG'));
     return sig
       ? [
           { price: sig.entryPrice, color: '#cbd5e1', title: 'Entrada' },
@@ -59,14 +61,14 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, signals
   return (
     <div className="space-y-4 pb-28">
       <button onClick={onBack} className="flex items-center gap-2 text-sm text-slate-300 py-1 hover:text-white transition-colors">
-        <ArrowLeft className="w-4 h-4" /> Voltar ao Mercado
+        <ArrowLeft className="w-4 h-4" /> Voltar
       </button>
 
       <div>
         <div className="text-sm text-slate-400">{asset.name}</div>
         <div className="flex items-baseline gap-3">
           <span className="text-3xl font-semibold text-slate-100 tabular-nums">{hasPrice ? `$${fmtPrice(asset.price)}` : '—'}</span>
-          {hasPrice && <span className={`text-base ${pnlColor(asset.change24h)}`}>{fmtPct(asset.change24h)} em 24h</span>}
+          {hasPrice && market === 'spot' && <span className={`text-base ${pnlColor(asset.change24h)}`}>{fmtPct(asset.change24h)} em 24h</span>}
         </div>
       </div>
 
@@ -88,7 +90,7 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, signals
             ))}
           </div>
 
-          <TvChart candles={candles} levels={levels} tvSymbol={`BINANCE:${asset.symbol}`} height={340} />
+          <TvChart candles={candles} levels={levels} tvSymbol={market === 'futures' ? `BINANCE:${asset.symbol}.P` : `BINANCE:${asset.symbol}`} height={340} />
           <div className="bg-[#161920] border border-[#23272f] rounded-xl p-4">
             <div className="text-sm text-slate-400">Leitura técnica ({timeframe})</div>
             <div className={`text-lg font-semibold ${verdictColor}`}>{diagnosis.summary.verdict}</div>
@@ -114,7 +116,7 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, signals
               onClick={() => onOpenTradeModal(asset)}
               className="w-full bg-slate-100 text-slate-900 font-semibold py-3.5 rounded-lg text-base"
             >
-              Simular compra de {asset.baseAsset}
+              {market === 'futures' ? `Simular operação em ${asset.baseAsset}` : `Simular compra de ${asset.baseAsset}`}
             </button>
           </div>
         </div>

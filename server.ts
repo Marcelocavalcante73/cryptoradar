@@ -3,7 +3,7 @@ import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getScanState, runScan, startScanner } from './server/scanner';
+import { getScanState, runScan, startScanner, parseMarket } from './server/scanner';
 import { fetchHistory } from './server/history';
 import { runBacktest } from './src/services/backtest';
 import { binanceGet } from './server/universe';
@@ -192,8 +192,8 @@ app.get('/api/market/tickers', async (_req: Request, res: Response) => {
 /**
  * GET /api/signals — sinais gerados pelo scanner (top 100 por market cap) e estado da varredura.
  */
-app.get('/api/signals', (_req: Request, res: Response) => {
-  res.json(getScanState());
+app.get('/api/signals', (req: Request, res: Response) => {
+  res.json(getScanState(parseMarket(req.query.market)));
 });
 
 /**
@@ -202,8 +202,48 @@ app.get('/api/signals', (_req: Request, res: Response) => {
 app.post('/api/scan', (req: Request, res: Response) => {
   const ip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1';
   if (isRateLimited(ip)) return res.status(429).json({ error: 'Limite de requisições excedido.' });
-  runScan();
+  runScan(parseMarket(req.query.market));
   res.status(202).json({ started: true });
+});
+
+/**
+ * GET /api/futures/prices?symbols=BTCUSDT,ETHUSDT — preços dos perpétuos USDT-M (proxy da Binance, cache curto).
+ * Os preços de futuros diferem um pouco dos de spot; a carteira de futuros precisa dos preços do próprio contrato.
+ */
+let futuresPriceCache: { at: number; map: Record<string, number> } | null = null;
+
+app.get('/api/futures/prices', async (req: Request, res: Response) => {
+  const wanted = String(req.query.symbols || '').split(',').map((x) => x.trim().toUpperCase()).filter((x) => /^[A-Z0-9]{3,20}USDT$/.test(x));
+  if (wanted.length === 0) return res.status(400).json({ error: 'Informe symbols (ex: BTCUSDT,ETHUSDT).' });
+  try {
+    if (!futuresPriceCache || Date.now() - futuresPriceCache.at > 3000) {
+      const raw = await binanceGet('/fapi/v1/ticker/price', 5000, 'futures');
+      const map: Record<string, number> = {};
+      for (const t of raw as any[]) map[t.symbol] = parseFloat(t.price);
+      futuresPriceCache = { at: Date.now(), map };
+    }
+    const prices: Record<string, number> = {};
+    for (const sym of wanted) if (Number.isFinite(futuresPriceCache.map[sym])) prices[sym] = futuresPriceCache.map[sym];
+    res.json({ prices });
+  } catch (e: any) {
+    res.status(502).json({ error: `Falha ao consultar preços de futuros: ${e?.message ?? 'indisponível'}` });
+  }
+});
+
+/**
+ * GET /api/futures/klines?symbol=BTCUSDT&interval=4h&limit=300 — candles dos perpétuos (proxy da Binance).
+ */
+app.get('/api/futures/klines', async (req: Request, res: Response) => {
+  const symbol = String(req.query.symbol || '').toUpperCase();
+  const interval = String(req.query.interval || '4h');
+  const limit = Math.min(1000, Math.max(10, Number(req.query.limit) || 300));
+  if (!/^[A-Z0-9]{3,20}USDT$/.test(symbol)) return res.status(400).json({ error: 'symbol inválido.' });
+  if (!['15m', '1h', '4h', '1d', '1w'].includes(interval)) return res.status(400).json({ error: 'interval inválido.' });
+  try {
+    res.json(await binanceGet(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`, 8000, 'futures'));
+  } catch (e: any) {
+    res.status(502).json({ error: `Falha ao consultar candles de futuros: ${e?.message ?? 'indisponível'}` });
+  }
 });
 
 /**
@@ -220,9 +260,14 @@ app.get('/api/backtest', async (req: Request, res: Response) => {
   if (!['15m', '1h', '4h', '1d'].includes(tf)) return res.status(400).json({ error: 'tf inválido (15m, 1h, 4h, 1d).' });
 
   try {
-    const candles = await fetchHistory(symbol, tf, bars);
-    const longOnly = req.query.both !== 'true' && process.env.MARKET_MODE !== 'futures';
-    const result = runBacktest(candles, symbol, symbol.replace(/USDT$/, ''), tf, { longOnly });
+    const market = parseMarket(req.query.market);
+    const candles = await fetchHistory(symbol, tf, bars, 1, market);
+    // Spot: só compras. Futuros: compras e vendas, com funding conservador de 0,01% por 8h
+    const longOnly = market === 'spot' && req.query.both !== 'true';
+    const result = runBacktest(candles, symbol, symbol.replace(/USDT$/, ''), tf, {
+      longOnly,
+      fundingPer8h: market === 'futures' ? 0.0001 : 0
+    });
     res.json({ ...result, trades: result.trades.slice(-100) });
   } catch (e: any) {
     res.status(502).json({ error: `Falha ao obter histórico da Binance: ${e?.message ?? 'indisponível'}` });

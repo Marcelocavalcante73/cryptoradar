@@ -43,11 +43,13 @@ import {
 
 import { calculateAllIndicators, calculateATR } from '../services/indicators';
 import { runBacktest, computeStats, BacktestTrade } from '../services/backtest';
-import { buildUniverse } from '../../server/universe';
+import { buildUniverse, resolveFuturesSymbol } from '../../server/universe';
 import { formatTelegramAlert } from '../../server/scanner';
 import { computeSignalPerformance, signalResultR, evaluateReadiness, PerfSignal } from '../services/signalPerformance';
 import { suggestAmount } from '../components/paperTrading/TradeSheet';
 import { historyToCsv } from '../components/paperTrading/WalletView';
+import { liquidationPrice, stopBeforeLiquidation, maxSafeLeverage, futuresSizing } from '../services/futures';
+import { positionUnrealizedPnl } from '../services/paperTradingService';
 import { evaluateSignal, scoreCandles, MIN_SCORE } from '../services/signalEngine';
 import { StorageService, INITIAL_PAPER_ACCOUNT } from '../services/storageService';
 import { CandleData, CryptoAsset, PaperAccount } from '../types/crypto';
@@ -523,6 +525,14 @@ const btDown = runBacktest(ohlc(noisySeries(200, -0.0015, 0.02, 600)), 'TESTUSDT
 const btDownLong = runBacktest(ohlc(noisySeries(200, -0.0015, 0.02, 600)), 'TESTUSDT', 'TEST', '1h', { longOnly: true });
 assert(btDown.trades.some((t) => t.direction === 'SHORT'), 'Backtest padrão inclui vendas a descoberto em mercado de baixa');
 assert(btDownLong.trades.every((t) => t.direction === 'LONG'), 'Modo spot (longOnly) não gera nenhuma operação de venda a descoberto');
+const btFunding = runBacktest(btRaw, 'TESTUSDT', 'TEST', '1h', { fundingPer8h: 0.0001 });
+assert(btFunding.trades.length === bt.trades.length, 'Funding não muda quais operações acontecem');
+assert(btFunding.trades.every((t, k) => {
+  const held = t.exitIndex - t.entryIndex + 1;
+  const expectedExtra = 0.0001 * (held / 8) * 100;
+  return Math.abs((bt.trades[k].netPct - t.netPct) - expectedExtra) < 1e-9;
+}), 'Funding desconta 0,01% por 8h de posição aberta em cada operação');
+assert(btFunding.stats.totalNetPct < bt.stats.totalNetPct, 'Com funding o resultado total é menor');
 assert(runBacktest(btRaw.slice(0, 40), 'TESTUSDT', 'TEST', '1h').trades.length === 0, 'Histórico curto => nenhuma operação');
 
 // Estatísticas com valores calculados à mão
@@ -906,6 +916,113 @@ const lucky = [
 const luckyRes = evaluateReadiness(lucky, t0);
 assert(luckyRes.checks[4].ok === false, 'Checagem "sem os 3 melhores" reprova quando poucos acertos sustentam o resultado');
 assert(evaluateReadiness(batch(12, 18, 30).map((x) => ({ ...x, isDemo: true })), t0).status === 'collecting', 'Sinais de demonstração nunca contam para o semáforo');
+
+// ============================================================================
+// FUTUROS: LIQUIDAÇÃO, ALAVANCAGEM SEGURA, TAMANHO DE POSIÇÃO E SHORT
+// ============================================================================
+console.log('\n--- Futuros ---');
+const near2 = (a: number, b: number, tol = 0.02) => Math.abs(a - b) <= tol;
+
+assert(near2(liquidationPrice('LONG', 100, 10), 90.5), 'Liquidação LONG 10x: 100 × (1 − 0,10 + 0,005) = 90,50');
+assert(near2(liquidationPrice('SHORT', 100, 10), 109.5), 'Liquidação SHORT 10x: 100 × (1 + 0,10 − 0,005) = 109,50');
+assert(liquidationPrice('LONG', 100, 1) < 1, 'LONG sem alavancagem só liquida perto de zero');
+assert(stopBeforeLiquidation('LONG', 100, 95, 10) && !stopBeforeLiquidation('LONG', 100, 89, 10), 'LONG 10x: stop em 95 protege; stop em 89 fica depois da liquidação (90,5)');
+assert(stopBeforeLiquidation('SHORT', 100, 105, 10) && !stopBeforeLiquidation('SHORT', 100, 111, 10), 'SHORT 10x: stop em 105 protege; em 111 fica depois da liquidação (109,5)');
+assert(maxSafeLeverage(100, 98) === 10, 'Stop curto (2%): alavancagem segura limitada pelo teto de 10x');
+assert(maxSafeLeverage(100, 90) === 4 && maxSafeLeverage(100, 80) === 2, 'Stop longo reduz a alavancagem segura (10% => 4x, 20% => 2x)');
+assert(maxSafeLeverage(100, 100) === 1, 'Stop igual à entrada => 1x');
+for (const stop of [98, 95, 90, 85]) {
+  const lev = maxSafeLeverage(100, stop);
+  assert(stopBeforeLiquidation('LONG', 100, stop, lev), `Alavancagem segura (${lev}x) sempre deixa o stop em ${stop} antes da liquidação`);
+}
+
+const fz = futuresSizing({ balance: 10000, entry: 100, stop: 98, riskPercent: 1, leverage: 5, feeRate: 0.0005 });
+assert(near2(fz.maxLoss, 100, 1) && !fz.capped, 'Tamanho em futuros perde ~1% do saldo no stop (incluindo taxas), independente da alavancagem');
+assert(near2(fz.margin, fz.notional / 5, 0.01), 'Margem = tamanho / alavancagem');
+const fz1 = futuresSizing({ balance: 10000, entry: 100, stop: 98, riskPercent: 1, leverage: 1, feeRate: 0.0005 });
+assert(near2(fz1.maxLoss, fz.maxLoss, 1) && fz1.margin > fz.margin * 4, 'Mesma perda máxima com 1x, mas muito mais margem travada');
+const fzCap = futuresSizing({ balance: 10000, entry: 100, stop: 99.95, riskPercent: 1, leverage: 5, feeRate: 0.0005 });
+assert(fzCap.capped && fzCap.margin <= 9500, 'Stop minúsculo: tamanho limitado a 95% do saldo em margem');
+
+const FUT: any = { ...INITIAL_PAPER_ACCOUNT };
+const px = (symbol: string, price: number): any => ({ symbol, price });
+
+// Ordem recusada: stop depois da liquidação
+const badStop = createTradeOrder(FUT, { symbol: 'ABCUSDT', direction: 'LONG', orderType: 'MARKET', entryPrice: 100, currentPrice: 100, investedUSDT: 500, leverage: 10, stopLossPrice: 85 });
+assert(!badStop.success && badStop.error!.includes('liquidação'), 'Simulador recusa 10x com stop além do preço de liquidação');
+
+// SHORT com alvo
+const sh = createTradeOrder(FUT, { symbol: 'ABCUSDT', direction: 'SHORT', orderType: 'MARKET', entryPrice: 100, currentPrice: 100, investedUSDT: 1000, leverage: 5, stopLossPrice: 103, targetPrice: 94 });
+assert(sh.success, 'SHORT 5x com stop e alvo é aceito');
+const shHit = evaluateTriggers(sh.account!, [px('ABCUSDT', 94)]);
+assert(shHit.triggeredOrders[0]?.type === 'TAKE_PROFIT', 'SHORT: preço caindo até o alvo fecha por TAKE_PROFIT');
+assert(near2(shHit.account.closedHistory[0].realizedPnl!, 295.15), 'SHORT: lucro = 1000 × 6% × 5x − taxas = +295,15', String(shHit.account.closedHistory[0].realizedPnl));
+const shStop = evaluateTriggers(sh.account!, [px('ABCUSDT', 103.5)]);
+assert(shStop.triggeredOrders[0]?.type === 'STOP_LOSS' && shStop.account.closedHistory[0].realizedPnl! < 0, 'SHORT: preço subindo bate o stop com prejuízo');
+assert(positionUnrealizedPnl(sh.account!.positions[0], 96).pnl > 0 && positionUnrealizedPnl(sh.account!.positions[0], 104).pnl < 0, 'PnL não realizado do SHORT: lucra quando cai, perde quando sobe');
+assert(positionUnrealizedPnl({ ...sh.account!.positions[0], direction: 'LONG' }, 96).pnl < 0, 'Mesmo preço, direção oposta => sinal do PnL invertido');
+
+// Liquidação
+const lg = createTradeOrder(FUT, { symbol: 'ABCUSDT', direction: 'LONG', orderType: 'MARKET', entryPrice: 100, currentPrice: 100, investedUSDT: 500, leverage: 10 });
+const lgLiq = evaluateTriggers(lg.account!, [px('ABCUSDT', 90)]);
+const liqPos = lgLiq.account.closedHistory[0];
+assert(lgLiq.triggeredOrders[0]?.type === 'LIQUIDATION' && liqPos.closeReason === 'LIQUIDATION', 'LONG 10x sem stop: queda de 10% liquida a posição');
+assert(near2(liqPos.closePrice!, 90.5, 0.001), 'Saída da liquidação no preço de liquidação (90,50), não no preço do mercado');
+assert(liqPos.realizedPnl! < -470 && near2(lgLiq.account.virtualBalance, 9520.24, 0.1), 'Liquidação perde quase toda a margem de $500: saldo final 9.520,24 (só $22,74 devolvidos)', String(lgLiq.account.virtualBalance));
+assert(lgLiq.account.positions.length === 0, 'Posição liquidada sai da lista de abertas');
+const stillOpen = evaluateTriggers(lg.account!, [px('ABCUSDT', 91)]);
+assert(stillOpen.triggeredOrders.length === 0 && stillOpen.account.positions.length === 1, 'Acima do preço de liquidação a posição segue aberta');
+const shLiq = createTradeOrder(FUT, { symbol: 'ABCUSDT', direction: 'SHORT', orderType: 'MARKET', entryPrice: 100, currentPrice: 100, investedUSDT: 500, leverage: 10 });
+const shLiqRes = evaluateTriggers(shLiq.account!, [px('ABCUSDT', 111)]);
+assert(shLiqRes.triggeredOrders[0]?.type === 'LIQUIDATION' && near2(shLiqRes.account.closedHistory[0].closePrice!, 109.5, 0.001), 'SHORT 10x: alta de 10% liquida em 109,50');
+// Stop executa antes da liquidação quando está entre a entrada e a liquidação
+const protectedPos = createTradeOrder(FUT, { symbol: 'ABCUSDT', direction: 'LONG', orderType: 'MARKET', entryPrice: 100, currentPrice: 100, investedUSDT: 500, leverage: 10, stopLossPrice: 95 });
+const protectedRes = evaluateTriggers(protectedPos.account!, [px('ABCUSDT', 94)]);
+assert(protectedRes.triggeredOrders[0]?.type === 'STOP_LOSS' && protectedRes.account.closedHistory[0].realizedPnl! > -300, 'Com stop válido, a perda fica limitada ao stop (não perde a margem inteira)');
+
+// ============================================================================
+// FUTUROS: UNIVERSO (BINANCE USDT-M ∩ BYBIT LINEAR) E ALERTAS
+// ============================================================================
+console.log('\n--- Futuros: universo e alertas ---');
+{
+  const realFetchF = globalThis.fetch;
+  const jsonF = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  globalThis.fetch = ((url: any) => {
+    const u = String(url);
+    if (u.includes('coingecko')) {
+      return jsonF([
+        { symbol: 'btc', name: 'Bitcoin', market_cap_rank: 1, market_cap: 1e12 },
+        { symbol: 'pepe', name: 'Pepe', market_cap_rank: 2, market_cap: 5e9 },     // 1000PEPEUSDT nas duas
+        { symbol: 'kas', name: 'Kaspa', market_cap_rank: 3, market_cap: 3e9 },     // só Binance
+        { symbol: 'xyz', name: 'Xyz', market_cap_rank: 4, market_cap: 1e9 },       // só Bybit
+        { symbol: 'old', name: 'Old', market_cap_rank: 5, market_cap: 1e9 }        // só contrato com vencimento na Binance
+      ]);
+    }
+    if (u.includes('/fapi/v1/ticker/price')) {
+      return jsonF([{ symbol: 'BTCUSDT', price: '1' }, { symbol: '1000PEPEUSDT', price: '1' }, { symbol: 'KASUSDT', price: '1' }, { symbol: 'OLDUSDT_250627', price: '1' }]);
+    }
+    if (u.includes('bybit.com') && u.includes('category=linear')) {
+      return jsonF({ retCode: 0, result: { list: [{ symbol: 'BTCUSDT' }, { symbol: '1000PEPEUSDT' }, { symbol: 'XYZUSDT' }] } });
+    }
+    return Promise.reject(new Error('url inesperada: ' + u));
+  }) as typeof fetch;
+  delete process.env.CMC_API_KEY;
+  delete process.env.EXCHANGES;
+  const uf = await buildUniverse('futures');
+  globalThis.fetch = realFetchF;
+  assert(uf.coins.map((c) => c.symbol).join(',') === 'BTCUSDT,1000PEPEUSDT', 'Universo de futuros = perpétuos presentes na Binance e na Bybit', uf.coins.map((c) => c.symbol).join(','));
+  assert(uf.coins[1].baseAsset === 'PEPE' && uf.coins[1].symbol === '1000PEPEUSDT', 'PEPE é mapeada para o contrato 1000PEPEUSDT (exibe PEPE)');
+  assert(uf.skipped.includes('KAS [sem Bybit]') && uf.skipped.includes('XYZ [sem Binance]'), 'Moedas fora de uma das corretoras são ignoradas com o motivo');
+  assert(uf.skipped.includes('OLD [sem Binance e Bybit]'), 'Contrato com vencimento (OLDUSDT_250627) não conta como perpétuo');
+  assert(resolveFuturesSymbol('PEPE', new Set(['1000PEPEUSDT'])) === '1000PEPEUSDT' && resolveFuturesSymbol('BTC', new Set(['BTCUSDT'])) === 'BTCUSDT' && resolveFuturesSymbol('ZZZ', new Set(['BTCUSDT'])) === null, 'Resolução de símbolo de futuros');
+}
+if (sell && buy) {
+  const longMsg = formatTelegramAlert(buy, 'futures');
+  const shortMsg = formatTelegramAlert(sell, 'futures');
+  assert(longMsg.startsWith('[FUTUROS]') && longMsg.includes('long') && longMsg.includes('Alavancagem máx. segura'), 'Alerta de futuros: etiqueta, long e alavancagem segura');
+  assert(shortMsg.includes('short') && shortMsg.includes('Stop:') && !shortMsg.includes('sair da posição'), 'Alerta de short em futuros traz alvo e stop (não é "sair da posição")');
+  assert(formatTelegramAlert(buy, 'spot').startsWith('[SPOT]'), 'Alerta de spot leva a etiqueta [SPOT]');
+}
 
 console.log('\n========================================================');
 console.log(`TOTAL DE TESTES EXECUTADOS: ${totalTests}`);

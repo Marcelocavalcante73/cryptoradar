@@ -1,12 +1,18 @@
-import { AppSettings, PaperAccount, PaperPosition } from '../types/crypto';
+import { AppSettings, MarketType, PaperAccount, PaperPosition } from '../types/crypto';
 
 const SETTINGS_KEY = 'cryptoradar_settings_v1';
-const PAPER_KEY = 'cryptoradar_paper_account_v1';
+// A conta de spot mantém a chave antiga para não perder o histórico já salvo
+const PAPER_KEYS: Record<MarketType, string> = {
+  spot: 'cryptoradar_paper_account_v1',
+  futures: 'cryptoradar_paper_account_futures_v1'
+};
+const MARKET_KEY = 'cryptoradar_market_v1';
 
 export const DEFAULT_SETTINGS: AppSettings = {
   baseCurrency: 'USDT',
   realCapital: 0,
   realRiskPercent: 1,
+  futuresLeverage: 3,
   refreshIntervalSeconds: 30,
   soundAlerts: false,
   risk: {
@@ -141,28 +147,42 @@ export const StorageService = {
     }
   },
 
-  getPaperAccount(): PaperAccount {
+  getMarket(): MarketType {
+    try {
+      return typeof localStorage !== 'undefined' && localStorage.getItem(MARKET_KEY) === 'futures' ? 'futures' : 'spot';
+    } catch {
+      return 'spot';
+    }
+  },
+
+  saveMarket(market: MarketType): void {
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem(MARKET_KEY, market);
+    } catch { /* sem armazenamento: usa o padrão na próxima abertura */ }
+  },
+
+  getPaperAccount(market: MarketType = 'spot'): PaperAccount {
     try {
       if (typeof localStorage === 'undefined') return INITIAL_PAPER_ACCOUNT;
-      const data = localStorage.getItem(PAPER_KEY);
+      const data = localStorage.getItem(PAPER_KEYS[market]);
       return data ? JSON.parse(data) : INITIAL_PAPER_ACCOUNT;
     } catch {
       return INITIAL_PAPER_ACCOUNT;
     }
   },
 
-  savePaperAccount(account: PaperAccount): void {
+  savePaperAccount(account: PaperAccount, market: MarketType = 'spot'): void {
     try {
       if (typeof localStorage === 'undefined') return;
-      localStorage.setItem(PAPER_KEY, JSON.stringify(account));
+      localStorage.setItem(PAPER_KEYS[market], JSON.stringify(account));
     } catch (e) {
       console.warn('Falha ao salvar conta simulada no localStorage', e);
     }
   },
 
   /** Zera saldo e posições. O histórico de operações é preservado, a menos que `keepHistory` seja false. */
-  resetPaperAccount(initialAmount: number = 10000, keepHistory: boolean = false): PaperAccount {
-    const previousHistory = keepHistory ? StorageService.getPaperAccount().closedHistory || [] : [];
+  resetPaperAccount(initialAmount: number = 10000, keepHistory: boolean = false, market: MarketType = 'spot'): PaperAccount {
+    const previousHistory = keepHistory ? StorageService.getPaperAccount(market).closedHistory || [] : [];
     const fresh: PaperAccount = {
       virtualBalance: initialAmount,
       initialBalance: initialAmount,
@@ -173,7 +193,7 @@ export const StorageService = {
       positions: [],
       closedHistory: previousHistory
     };
-    StorageService.savePaperAccount(fresh);
+    StorageService.savePaperAccount(fresh, market);
     return fresh;
   },
 

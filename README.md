@@ -25,7 +25,10 @@ Para produção: `npm run build` e depois `NODE_ENV=production npm start`.
 
 Pontuação de −100 a +100 combinando tendência (EMA 20/50), MACD, RSI, volume e cruzamentos recentes, sempre em candles **fechados**. Só emite sinal com pontuação de 60 ou mais e tendência definida. Stop e alvo vêm do ATR (risco:retorno 1:2).
 
-Modo **spot** (padrão): “Vender” significa sair de uma posição que você já tem. Para futuros, use `MARKET_MODE=futures`.
+O app tem dois modos, escolhidos no seletor **Spot | Futuros** (cada um com seus sinais, sua carteira simulada e seu histórico):
+
+- **Spot**: só compras. “Vender (sair)” significa sair de uma posição que você já tem.
+- **Futuros** (perpétuos USDT-M): sinais de **Long** e **Short**, com alavancagem, margem isolada, preço de liquidação e alavancagem segura para cada stop. O universo é o top 100 ∩ perpétuos da Binance e da Bybit (moedas como PEPE aparecem como `1000PEPE`).
 
 ## Variáveis (.env)
 
@@ -34,13 +37,14 @@ Modo **spot** (padrão): “Vender” significa sair de uma posição que você 
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Alertas automáticos de cada sinal novo |
 | `CMC_API_KEY` | Usar CoinMarketCap em vez do CoinGecko para o ranking |
 | `EXCHANGES` | `binance,bybit` (padrão). O par precisa existir em todas as listadas |
-| `MARKET_MODE` | `spot` (padrão) ou `futures` |
+| `FUTURES_ENABLED` | `true` (padrão). Use `false` para desligar o scanner de futuros |
 | `SCAN_INTERVAL_MINUTES` | Intervalo da varredura (padrão 5) |
 
 ## Backtest
 
 ```bash
-npm run backtest -- --tf 1h --top 30 --bars 2000
+npm run backtest -- --tf 1h --top 30 --bars 2000                 # spot (só compras)
+npm run backtest -- --tf 1h --top 30 --bars 2000 --market futures  # futuros (long e short, com funding)
 ```
 
 Roda o motor no histórico real com taxa e derrapagem. Resultado passado não garante resultado futuro.

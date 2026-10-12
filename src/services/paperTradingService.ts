@@ -5,6 +5,7 @@
  */
 
 import { PaperAccount, PaperPosition, CryptoAsset, SignalDirection, OrderType } from '../types/crypto';
+import { liquidationPrice, stopBeforeLiquidation } from './futures';
 
 export interface TradeOrderInput {
   symbol: string;
@@ -47,7 +48,7 @@ export interface TriggerEvaluationResult {
   triggeredOrders: Array<{
     positionId: string;
     symbol: string;
-    type: 'LIMIT_FILLED' | 'TAKE_PROFIT' | 'STOP_LOSS';
+    type: 'LIMIT_FILLED' | 'TAKE_PROFIT' | 'STOP_LOSS' | 'LIQUIDATION';
     price: number;
     netPnl?: number;
   }>;
@@ -115,6 +116,17 @@ export function createTradeOrder(
     if (input.direction === 'SHORT' && input.stopLossPrice <= effectivePrice) {
       return { success: false, account, error: 'Em SHORT, o Stop-Loss deve ser maior que o preço de entrada.' };
     }
+  }
+
+  // Com alavancagem, o stop precisa ficar antes do preço de liquidação, senão a posição é liquidada primeiro
+  if (input.stopLossPrice !== undefined && input.leverage > 1 &&
+      !stopBeforeLiquidation(input.direction, effectivePrice, input.stopLossPrice, input.leverage)) {
+    const liq = liquidationPrice(input.direction, effectivePrice, input.leverage);
+    return {
+      success: false,
+      account,
+      error: `Com ${input.leverage}x, a liquidação ocorre em $${liq.toFixed(4)}, antes do seu stop. Reduza a alavancagem ou aproxime o stop.`
+    };
   }
 
   // 2. Cálculos Nocional e Taxas
@@ -364,10 +376,18 @@ export function evaluateTriggers(
     // 2. Posições Abertas (Avaliação de TP e SL)
     if (pos.status === 'OPEN') {
       let shouldClose = false;
-      let exitReason: 'TAKE_PROFIT' | 'STOP_LOSS' | null = null;
+      let exitReason: 'TAKE_PROFIT' | 'STOP_LOSS' | 'LIQUIDATION' | null = null;
       let exitPrice = livePrice;
 
-      if (pos.direction === 'LONG') {
+      // Liquidação tem prioridade: se o preço já passou dela, a margem foi perdida antes de qualquer stop
+      const liq = liquidationPrice(pos.direction, pos.entryPrice, pos.leverage);
+      const liquidated = pos.direction === 'LONG' ? livePrice <= liq : livePrice >= liq;
+
+      if (liquidated) {
+        shouldClose = true;
+        exitReason = 'LIQUIDATION';
+        exitPrice = liq;
+      } else if (pos.direction === 'LONG') {
         if (pos.targetPrice && livePrice >= pos.targetPrice) {
           shouldClose = true;
           exitReason = 'TAKE_PROFIT';
@@ -502,4 +522,16 @@ export function calculateAccountMetrics(
     lossTrades: lossCount,
     winRatePercent
   };
+}
+
+/**
+ * PnL líquido não realizado de uma posição aberta (LONG ou SHORT), já descontando a taxa de abertura
+ * e a taxa estimada de fechamento. Fonte única usada pelas telas.
+ */
+export function positionUnrealizedPnl(pos: PaperPosition, livePrice: number): { pnl: number; pct: number } {
+  const diff = pos.direction === 'LONG' ? livePrice - pos.entryPrice : pos.entryPrice - livePrice;
+  const gross = pos.investedUSDT * (diff / pos.entryPrice) * pos.leverage;
+  const fees = (pos.openFee || 0) + pos.amount * livePrice * TRADING_FEE_RATE;
+  const pnl = gross - fees;
+  return { pnl, pct: pos.investedUSDT > 0 ? (pnl / pos.investedUSDT) * 100 : 0 };
 }

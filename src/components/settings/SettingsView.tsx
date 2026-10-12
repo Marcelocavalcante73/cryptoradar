@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { AppSettings } from '../../types/crypto';
+import { AppSettings, MarketType } from '../../types/crypto';
+import { MAX_LEVERAGE } from '../../services/futures';
 import { soundService } from '../../services/soundService';
 import { sendTelegramTestMessage, getTelegramServerStatus, TelegramBackendStatus } from '../../services/telegramService';
 import { ScanInfo } from '../signals/SignalsView';
 
 interface SettingsViewProps {
   settings: AppSettings;
-  scanInfo?: ScanInfo | null;
+  scanInfos: Record<MarketType, ScanInfo | null>;
   onSaveSettings: (settings: AppSettings) => void;
   onBack: () => void;
 }
@@ -14,7 +15,7 @@ interface SettingsViewProps {
 const card = 'bg-[#161920] border border-[#23272f] rounded-xl p-4';
 const input = 'bg-[#0f1115] border border-[#2a2f3a] rounded-lg px-3 py-2.5 text-base text-slate-100 w-24 text-right tabular-nums focus:outline-none focus:border-slate-400';
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ settings, scanInfo, onSaveSettings, onBack }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({ settings, scanInfos, onSaveSettings, onBack }) => {
   const [tg, setTg] = useState<(TelegramBackendStatus & { chatConfigured?: boolean }) | null>(null);
   const [tgMsg, setTgMsg] = useState<string | null>(null);
   const [tgBusy, setTgBusy] = useState(false);
@@ -72,6 +73,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, scanInfo, 
           <input className={input} inputMode="decimal" defaultValue={settings.realRiskPercent ?? 1}
             onBlur={(e) => onSaveSettings({ ...settings, realRiskPercent: num(e.target.value, 0.1, 5, settings.realRiskPercent ?? 1) })} />
         </div>
+        <div className={row}>
+          <span className="text-slate-200">Alavancagem sugerida em futuros (x)</span>
+          <input className={input} inputMode="decimal" defaultValue={settings.futuresLeverage ?? 3}
+            onBlur={(e) => onSaveSettings({ ...settings, futuresLeverage: Math.round(num(e.target.value, 1, MAX_LEVERAGE, settings.futuresLeverage ?? 3)) })} />
+        </div>
         <p className="text-xs text-slate-500 leading-relaxed">
           Só serve para sugerir o tamanho da compra em cada sinal. O app não envia ordens: você opera na corretora, sempre com o stop.
           Comece com um valor que possa perder por inteiro.
@@ -119,26 +125,31 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, scanInfo, 
         )}
       </section>
 
-      <section className={card}>
-        <h3 className="text-sm font-medium text-slate-300 mb-2">Scanner</h3>
-        {scanInfo?.lastScanAt && !scanInfo.lastError ? (
-          <div className="text-sm text-slate-300 space-y-1 leading-relaxed">
-            <p>
-              {scanInfo.universeCount} moedas das 100 maiores, listadas em{' '}
-              {(scanInfo.exchanges ?? ['binance']).map((e) => (e === 'bybit' ? 'Bybit' : 'Binance')).join(' e ')}.
-            </p>
-            <p>Última varredura: {new Date(scanInfo.lastScanAt).toLocaleString('pt-BR')} · modo {scanInfo.marketMode === 'futures' ? 'futuros' : 'spot'}.</p>
-            {scanInfo.skipped.length > 0 && (
-              <details>
-                <summary className="cursor-pointer text-slate-400">{scanInfo.skipped.length} moedas ignoradas</summary>
-                <p className="text-xs text-slate-500 mt-1">{scanInfo.skipped.join(', ')}</p>
-              </details>
+      {(['spot', 'futures'] as MarketType[]).map((m) => {
+        const info = scanInfos[m];
+        return (
+          <section key={m} className={card}>
+            <h3 className="text-sm font-medium text-slate-300 mb-2">Scanner · {m === 'futures' ? 'Futuros' : 'Spot'}</h3>
+            {info?.lastScanAt && !info.lastError ? (
+              <div className="text-sm text-slate-300 space-y-1 leading-relaxed">
+                <p>
+                  {info.universeCount} {m === 'futures' ? 'perpétuos' : 'moedas'} das 100 maiores, listados em{' '}
+                  {(info.exchanges ?? ['binance']).map((e) => (e === 'bybit' ? 'Bybit' : 'Binance')).join(' e ')}.
+                </p>
+                <p>Última varredura: {new Date(info.lastScanAt).toLocaleString('pt-BR')}.</p>
+                {info.skipped.length > 0 && (
+                  <details>
+                    <summary className="cursor-pointer text-slate-400">{info.skipped.length} moedas ignoradas</summary>
+                    <p className="text-xs text-slate-500 mt-1">{info.skipped.join(', ')}</p>
+                  </details>
+                )}
+              </div>
+            ) : (
+              <p className="text-sm text-slate-400">{info?.lastError ?? 'Scanner indisponível ou ainda na primeira varredura.'}</p>
             )}
-          </div>
-        ) : (
-          <p className="text-sm text-slate-400">{scanInfo?.lastError ?? 'Scanner indisponível ou ainda na primeira varredura.'}</p>
-        )}
-      </section>
+          </section>
+        );
+      })}
     </div>
   );
 };
