@@ -5,6 +5,8 @@ const PAPER_KEY = 'cryptoradar_paper_account_v1';
 
 export const DEFAULT_SETTINGS: AppSettings = {
   baseCurrency: 'USDT',
+  realCapital: 0,
+  realRiskPercent: 1,
   refreshIntervalSeconds: 30,
   soundAlerts: false,
   risk: {
