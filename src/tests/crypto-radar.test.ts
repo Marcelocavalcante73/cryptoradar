@@ -30,6 +30,7 @@ import {
 import {
   apiService,
   parseBinanceKline,
+  priceDecimals,
   timeframeToBinanceInterval,
   validateBinanceMarketData,
   MarketDataValidator
@@ -869,6 +870,14 @@ assert(Math.abs(fibPrices[4] - (82000 + 9000 * 0.618)) < 1e-4, 'Fibonacci 61.8% 
 // Teste 5: Régua de Medição (Ruler / Measure Tool)
 const measuredBars = Math.abs(pEnd.index - pStart.index);
 assert(measuredBars === 20, 'Régua de Medição calcula intervalo correto de 20 velas');
+
+// ============================================================================
+// PRECISÃO DE PREÇO (MOEDAS DE VALOR MUITO BAIXO)
+// ============================================================================
+console.log('\n--- Precisão de preço ---');
+const pepeKline = parseBinanceKline([1700000000000, '0.00001234', '0.00001300', '0.00001200', '0.00001250', '9999999'], '1h', priceDecimals(0.0000125));
+assert(pepeKline !== null && pepeKline.close === 0.0000125 && pepeKline.open === 0.00001234, 'Moeda de preço ~0,00001 mantém precisão (antes virava 0 e era descartada)');
+assert(priceDecimals(64000) === 2 && priceDecimals(150) === 4 && priceDecimals(0.5) === 6 && priceDecimals(0.00001) === 10, 'Casas decimais por faixa de preço');
 
 console.log('\n========================================================');
 console.log(`TOTAL DE TESTES EXECUTADOS: ${totalTests}`);

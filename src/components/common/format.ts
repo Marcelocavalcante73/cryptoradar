@@ -1,6 +1,6 @@
 export function fmtPrice(n: number): string {
   if (!Number.isFinite(n)) return '—';
-  const d = n >= 1000 ? 2 : n >= 1 ? 3 : n >= 0.01 ? 5 : 8;
+  const d = n >= 100 ? 2 : n >= 1 ? 3 : n >= 0.01 ? 5 : 8;
   return n.toLocaleString('pt-BR', { maximumFractionDigits: d });
 }
 

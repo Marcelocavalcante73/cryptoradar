@@ -60,6 +60,11 @@ export function timeframeToBinanceInterval(tf: Timeframe): string {
   }
 }
 
+/** Casas decimais para guardar o preço sem zerar moedas de valor muito baixo (ex: PEPE). */
+export function priceDecimals(price: number): number {
+  return price >= 1000 ? 2 : price >= 1 ? 4 : price >= 0.01 ? 6 : 10;
+}
+
 /**
  * Converte um elemento bruto da API de Klines da Binance para o tipo CandleData.
  */
@@ -632,7 +637,7 @@ export class CryptoApiService implements MarketDataProvider {
     limit: number = 60
   ): Promise<KlineFetchResult> {
     const interval = timeframeToBinanceInterval(timeframe);
-    const decimals = assetFallback && assetFallback.price < 10 ? 4 : 2;
+    const decimals = assetFallback ? priceDecimals(assetFallback.price) : 4;
 
     // Tentativas ordenadas: mirror público oficial Binance Vision (sem bloqueio) e endpoint principal
     const endpoints = [
