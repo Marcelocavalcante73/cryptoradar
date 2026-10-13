@@ -580,7 +580,7 @@ function mockFetch(bybitOk = true) {
 }
 
 delete process.env.CMC_API_KEY;
-delete process.env.EXCHANGES;
+process.env.EXCHANGES = 'binance,bybit';
 mockFetch();
 const uni = await buildUniverse();
 assert(uni.coins.map((c) => c.baseAsset).join(',') === 'BTC,ETH', 'Universo = interseção Binance ∩ Bybit (sem stablecoin)', uni.coins.map((c) => c.baseAsset).join(','));
@@ -1007,7 +1007,7 @@ console.log('\n--- Futuros: universo e alertas ---');
     return Promise.reject(new Error('url inesperada: ' + u));
   }) as typeof fetch;
   delete process.env.CMC_API_KEY;
-  delete process.env.EXCHANGES;
+  process.env.EXCHANGES = 'binance,bybit';
   const uf = await buildUniverse('futures');
   globalThis.fetch = realFetchF;
   assert(uf.coins.map((c) => c.symbol).join(',') === 'BTCUSDT,1000PEPEUSDT', 'Universo de futuros = perpétuos presentes na Binance e na Bybit', uf.coins.map((c) => c.symbol).join(','));
