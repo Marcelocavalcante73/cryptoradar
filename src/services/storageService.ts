@@ -1,4 +1,5 @@
 import { AppSettings, MarketType, PaperAccount, PaperPosition } from '../types/crypto';
+import { localStore } from './localStore';
 
 const SETTINGS_KEY = 'cryptoradar_settings_v1';
 // A conta de spot mantém a chave antiga para não perder o histórico já salvo
@@ -127,57 +128,60 @@ export const DEMO_SAMPLE_PAPER_ACCOUNT: PaperAccount = {
   ]
 };
 
+/** Guardamos `{ v, t }`: o valor e o instante (ms) da última gravação, para reconciliar com o servidor. */
+function readStamped<T>(key: string): { v: T; t: number } | null {
+  try {
+    const raw = localStore.get(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && 't' in parsed && 'v' in parsed) return parsed;
+    return { v: parsed as T, t: 0 }; // formato antigo (sem data)
+  } catch {
+    return null;
+  }
+}
+
+function writeStamped(key: string, value: unknown, t: number): void {
+  localStore.set(key, JSON.stringify({ v: value, t }));
+}
+
 export const StorageService = {
   getSettings(): AppSettings {
-    try {
-      if (typeof localStorage === 'undefined') return DEFAULT_SETTINGS;
-      const data = localStorage.getItem(SETTINGS_KEY);
-      return data ? { ...DEFAULT_SETTINGS, ...JSON.parse(data) } : DEFAULT_SETTINGS;
-    } catch {
-      return DEFAULT_SETTINGS;
-    }
+    const rec = readStamped<AppSettings>(SETTINGS_KEY);
+    return rec ? { ...DEFAULT_SETTINGS, ...rec.v } : DEFAULT_SETTINGS;
   },
 
-  saveSettings(settings: AppSettings): void {
-    try {
-      if (typeof localStorage === 'undefined') return;
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-    } catch (e) {
-      console.warn('Falha ao salvar configurações no localStorage', e);
-    }
+  getSettingsSavedAt(): number {
+    return readStamped(SETTINGS_KEY)?.t ?? 0;
+  },
+
+  /** Devolve o instante da gravação (ms). Se vier `at`, usa-o (ex.: cópia adotada do servidor). */
+  saveSettings(settings: AppSettings, at: number = Date.now()): number {
+    writeStamped(SETTINGS_KEY, settings, at);
+    return at;
   },
 
   getMarket(): MarketType {
-    try {
-      return typeof localStorage !== 'undefined' && localStorage.getItem(MARKET_KEY) === 'futures' ? 'futures' : 'spot';
-    } catch {
-      return 'spot';
-    }
+    return localStore.get(MARKET_KEY) === 'futures' ? 'futures' : 'spot';
   },
 
   saveMarket(market: MarketType): void {
-    try {
-      if (typeof localStorage !== 'undefined') localStorage.setItem(MARKET_KEY, market);
-    } catch { /* sem armazenamento: usa o padrão na próxima abertura */ }
+    localStore.set(MARKET_KEY, market);
   },
 
   getPaperAccount(market: MarketType = 'spot'): PaperAccount {
-    try {
-      if (typeof localStorage === 'undefined') return INITIAL_PAPER_ACCOUNT;
-      const data = localStorage.getItem(PAPER_KEYS[market]);
-      return data ? JSON.parse(data) : INITIAL_PAPER_ACCOUNT;
-    } catch {
-      return INITIAL_PAPER_ACCOUNT;
-    }
+    const rec = readStamped<PaperAccount>(PAPER_KEYS[market]);
+    return rec && rec.v && Array.isArray(rec.v.positions) ? rec.v : INITIAL_PAPER_ACCOUNT;
   },
 
-  savePaperAccount(account: PaperAccount, market: MarketType = 'spot'): void {
-    try {
-      if (typeof localStorage === 'undefined') return;
-      localStorage.setItem(PAPER_KEYS[market], JSON.stringify(account));
-    } catch (e) {
-      console.warn('Falha ao salvar conta simulada no localStorage', e);
-    }
+  getPaperAccountSavedAt(market: MarketType = 'spot'): number {
+    return readStamped(PAPER_KEYS[market])?.t ?? 0;
+  },
+
+  /** Devolve o instante da gravação (ms). */
+  savePaperAccount(account: PaperAccount, market: MarketType = 'spot', at: number = Date.now()): number {
+    writeStamped(PAPER_KEYS[market], account, at);
+    return at;
   },
 
   /** Zera saldo e posições. O histórico de operações é preservado, a menos que `keepHistory` seja false. */

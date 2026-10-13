@@ -3,13 +3,17 @@ import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getScanState, runScan, startScanner, parseMarket } from './server/scanner';
+import { getScanState, runScan, startScanner, parseMarket, ensureScan, loadScanners } from './server/scanner';
 import { fetchHistory } from './server/history';
 import { runBacktest } from './src/services/backtest';
 import { binanceGet } from './server/universe';
 import { getBatchJob, startBatchJob } from './server/backtestJob';
-import { getTrendState, runTrendScan, startTrendScanner } from './server/trendScanner';
+import { getTrendState, runTrendScan, startTrendScanner, ensureTrendScan, loadTrendState } from './server/trendScanner';
 import { futuresKlines, futuresPrices, getFuturesProvider } from './server/futuresData';
+import { stateRead, stateWrite, storageStatus, checkAccess } from './server/stateApi';
+import { runHealth } from './server/health';
+import { shouldServeStatic } from './server/runtime';
+import fs from 'fs';
 
 dotenv.config();
 
@@ -34,7 +38,7 @@ function getPort(): number {
 
 const PORT = getPort();
 
-app.use(express.json());
+app.use(express.json({ limit: '3mb' }));
 
 // In-memory rate limiting map: ip -> array of request timestamps
 const rateLimitMap = new Map<string, number[]>();
@@ -195,8 +199,12 @@ app.get('/api/market/tickers', async (_req: Request, res: Response) => {
 /**
  * GET /api/signals — sinais gerados pelo scanner (top 100 por market cap) e estado da varredura.
  */
-app.get('/api/signals', (req: Request, res: Response) => {
-  res.json(getScanState(parseMarket(req.query.market)));
+app.get('/api/signals', async (req: Request, res: Response) => {
+  const market = parseMarket(req.query.market);
+  // wait=1: mantém a requisição aberta enquanto a varredura roda (até 25 s). Em hospedagens que só dão processador
+  // durante requisições (Cloud Run / AI Studio publicado), é isso que deixa a varredura terminar.
+  await ensureScan(market, req.query.wait === '1' ? 25000 : 0);
+  res.json(getScanState(market));
 });
 
 /**
@@ -279,10 +287,61 @@ app.get('/api/backtest', async (req: Request, res: Response) => {
 });
 
 /**
+ * Estado do usuário no servidor (carteiras simuladas, histórico, ajustes), igual em qualquer hospedagem e navegador.
+ *  GET  /api/storage          como o servidor guarda os dados e se exige chave de acesso
+ *  POST /api/access           confere a chave de acesso (cabeçalho X-Access-Key)
+ *  GET  /api/state/:key       lê  (paper-spot | paper-futures | settings)
+ *  PUT  /api/state/:key       grava {value, savedAt}; 409 se o servidor tem uma versão mais nova
+ */
+const stateHits = new Map<string, number[]>();
+function stateLimited(ip: string): boolean {
+  const now = Date.now();
+  const hits = (stateHits.get(ip) || []).filter((t) => now - t < 60000);
+  if (hits.length >= 240) return true;
+  hits.push(now);
+  stateHits.set(ip, hits);
+  return false;
+}
+const clientIp = (req: Request) => (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1';
+
+/** GET /api/health — diagnóstico completo, feito de dentro do servidor (limitado a 12 por minuto). */
+const healthHits: number[] = [];
+app.get('/api/health', async (_req: Request, res: Response) => {
+  const now = Date.now();
+  while (healthHits.length && now - healthHits[0] > 60000) healthHits.shift();
+  if (healthHits.length >= 12) return res.status(429).json({ error: 'Muitas verificações. Aguarde um minuto.' });
+  healthHits.push(now);
+  res.json(await runHealth());
+});
+
+app.get('/api/storage', (_req: Request, res: Response) => {
+  res.json(storageStatus());
+});
+
+app.post('/api/access', (req: Request, res: Response) => {
+  if (stateLimited(clientIp(req))) return res.status(429).json({ error: 'Muitas requisições.' });
+  const r = checkAccess(req.header('x-access-key'));
+  res.status(r.status).json(r.json);
+});
+
+app.get('/api/state/:key', async (req: Request, res: Response) => {
+  if (stateLimited(clientIp(req))) return res.status(429).json({ error: 'Muitas requisições.' });
+  const r = await stateRead(req.params.key, req.header('x-access-key'));
+  res.status(r.status).json(r.json);
+});
+
+app.put('/api/state/:key', async (req: Request, res: Response) => {
+  if (stateLimited(clientIp(req))) return res.status(429).json({ error: 'Muitas requisições.' });
+  const r = await stateWrite(req.params.key, req.body, req.header('x-access-key'));
+  res.status(r.status).json(r.json);
+});
+
+/**
  * GET /api/trend — sinais diários da estratégia de rompimento de 55 dias, regime do Bitcoin e lista de observação.
  * POST /api/trend/scan — força uma varredura imediata.
  */
-app.get('/api/trend', (_req: Request, res: Response) => {
+app.get('/api/trend', async (req: Request, res: Response) => {
+  await ensureTrendScan(30 * 60e3, req.query.wait === '1' ? 25000 : 0);
   res.json(getTrendState());
 });
 
@@ -318,7 +377,13 @@ app.get('/api/backtest/batch', (_req: Request, res: Response) => {
  * Inicialização do Vite middleware em desenvolvimento ou arquivos estáticos em produção.
  */
 async function startServer() {
-  const isProduction = process.env.NODE_ENV === 'production';
+  const distPathCheck = path.resolve(__dirname, 'dist');
+  const distExists = fs.existsSync(path.join(distPathCheck, 'index.html'));
+  let isProduction = shouldServeStatic(process.env, process.argv, distExists);
+  if (isProduction && !distExists) {
+    console.warn('Produção pedida, mas dist/ não existe (rode `npm run build`). Usando o modo de desenvolvimento.');
+    isProduction = false;
+  }
 
   if (!isProduction) {
     const vite = await createViteServer({
@@ -333,6 +398,9 @@ async function startServer() {
       res.sendFile(path.resolve(distPath, 'index.html'));
     });
   }
+
+  // Restaura o último resultado antes de aceitar pedidos: o servidor responde com dados desde o primeiro acesso
+  await Promise.all([loadScanners(), loadTrendState()]);
 
   if (process.env.SCANNER_ENABLED !== 'false') {
     startScanner(Number(process.env.SCAN_INTERVAL_MINUTES) || 5);

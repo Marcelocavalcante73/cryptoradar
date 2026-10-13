@@ -21,6 +21,11 @@ import { SettingsView } from './components/settings/SettingsView';
 import { BacktestView } from './components/backtest/BacktestView';
 import { TrendView, TrendInfo } from './components/trend/TrendView';
 import { TrendSignal } from './services/trendSignals';
+import { AccessGate } from './components/common/AccessGate';
+import { localStore } from './services/localStore';
+import {
+  SyncQueue, SyncStatus, StorageInfo, RemoteKey, decideSync, fetchStorageInfo, pullState, verifyAccessKey, accessKey
+} from './services/remoteState';
 import { TradeSheet, TradeRequest } from './components/paperTrading/TradeSheet';
 
 const MARKETS: MarketType[] = ['spot', 'futures'];
@@ -54,6 +59,13 @@ export default function App() {
   }));
   const [settings, setSettings] = useState<AppSettings>(() => StorageService.getSettings());
 
+  // Sincronização da carteira, do histórico e dos ajustes com o servidor
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>('checking');
+  const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
+  const [locked, setLocked] = useState(false);
+  const [syncDetail, setSyncDetail] = useState<string | null>(null);
+  const reconciledRef = useRef(false);
+
   const [isFetching, setIsFetching] = useState(false);
   const [isLive, setIsLive] = useState(false);
   const [isDemoMode, setIsDemoMode] = useState(false);
@@ -78,10 +90,69 @@ export default function App() {
   const scanInfo = scanInfos[market];
   const paperAccount = accounts[market];
 
+  // Adota uma cópia vinda do servidor (a mais nova vence) e guarda também neste aparelho
+  const applyRemote = useCallback((key: RemoteKey, value: any, savedAt: number) => {
+    if (key === 'settings') {
+      StorageService.saveSettings(value, savedAt);
+      setSettings({ ...StorageService.getSettings() });
+      return;
+    }
+    const m: MarketType = key === 'paper-futures' ? 'futures' : 'spot';
+    StorageService.savePaperAccount(value, m, savedAt);
+    accountsRef.current = { ...accountsRef.current, [m]: value };
+    setAccounts(accountsRef.current);
+  }, []);
+
+  const queueRef = useRef<SyncQueue | null>(null);
+  if (!queueRef.current) {
+    queueRef.current = new SyncQueue(
+      (st) => { setSyncStatus(st); setSyncDetail(queueRef.current?.lastError ?? null); },
+      (key, value, savedAt) => applyRemote(key, value, savedAt) // outro aparelho gravou depois: usa a versão do servidor
+    );
+  }
+
   const commitAccount = useCallback((m: MarketType, account: PaperAccount) => {
     accountsRef.current = { ...accountsRef.current, [m]: account };
     setAccounts(accountsRef.current);
-    StorageService.savePaperAccount(account, m);
+    const at = StorageService.savePaperAccount(account, m);
+    if (reconciledRef.current) queueRef.current?.enqueue(m === 'futures' ? 'paper-futures' : 'paper-spot', account, at);
+  }, []);
+
+  /** Ao abrir: compara cada cópia local com a do servidor e fica com a mais nova (ou envia a local se for mais nova). */
+  const reconcile = useCallback(async () => {
+    setSyncStatus('checking');
+    const info = await fetchStorageInfo();
+    setStorageInfo(info);
+    if (!info) { setSyncStatus('offline'); reconciledRef.current = true; return; }
+
+    if (info.keyRequired && !(await verifyAccessKey(accessKey.get()))) { setLocked(true); return; }
+    setLocked(false);
+
+    const keys: RemoteKey[] = ['paper-spot', 'paper-futures', 'settings'];
+    let offline = false;
+    for (const key of keys) {
+      const remote = await pullState(key);
+      if (remote.kind === 'locked') { setLocked(true); return; }
+      if (remote.kind === 'offline') { offline = true; continue; }
+      const m: MarketType = key === 'paper-futures' ? 'futures' : 'spot';
+      const localAt = key === 'settings' ? StorageService.getSettingsSavedAt() : StorageService.getPaperAccountSavedAt(m);
+      const action = decideSync(localAt, { savedAt: remote.savedAt, value: remote.value });
+      if (action === 'use-remote') applyRemote(key, remote.value, remote.savedAt);
+      else if (action === 'push-local') {
+        const value = key === 'settings' ? StorageService.getSettings() : StorageService.getPaperAccount(m);
+        queueRef.current?.enqueue(key, value, localAt);
+      }
+    }
+    reconciledRef.current = true;
+    if (offline) { setSyncStatus('offline'); return; }
+    if (queueRef.current?.hasPending()) await queueRef.current.flush();
+    else setSyncStatus('saved');
+  }, [applyRemote]);
+
+  useEffect(() => {
+    void reconcile();
+    return () => queueRef.current?.dispose();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const changeMarket = (m: MarketType) => {
@@ -175,12 +246,13 @@ export default function App() {
   // Sinais reais dos scanners do servidor (spot e futuros). Sem servidor, o spot mantém exemplos.
   useEffect(() => {
     let cancelled = false;
-    const load = async (m: MarketType) => {
+    // wait=1: o servidor mantém a conexão aberta enquanto varre (necessário em hospedagens que só dão processador durante requisições)
+    const load = async (m: MarketType): Promise<boolean> => {
       try {
-        const r = await fetch(`/api/signals?market=${m}`, { signal: AbortSignal.timeout(5000) });
+        const r = await fetch(`/api/signals?market=${m}&wait=1`, { signal: AbortSignal.timeout(35000) });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const j = await r.json();
-        if (cancelled) return;
+        if (cancelled) return false;
         setScanInfos((prev) => ({
           ...prev,
           [m]: {
@@ -199,32 +271,42 @@ export default function App() {
           }
         }));
         if (j.lastScanAt && Array.isArray(j.signals) && !j.lastError) setSignalsBy((prev) => ({ ...prev, [m]: j.signals }));
+        return Boolean(j.running);
       } catch {
         if (!cancelled) setScanInfos((prev) => ({ ...prev, [m]: null }));
+        return false;
       }
     };
-    const loadAll = () => MARKETS.forEach((m) => load(m));
-    loadAll();
-    const id = setInterval(loadAll, 60000);
-    return () => { cancelled = true; clearInterval(id); };
+    // Cada mercado repete: logo em seguida se ainda está varrendo, senão a cada 60 s
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const loop = async (m: MarketType) => {
+      const running = await load(m);
+      if (!cancelled) timers.push(setTimeout(() => { void loop(m); }, running ? 1000 : 60000));
+    };
+    MARKETS.forEach((m) => { void loop(m); });
+    return () => { cancelled = true; timers.forEach(clearTimeout); };
   }, []);
 
-  // Scanner diário da estratégia de tendência
+  // Scanner diário da estratégia de tendência (mesma conexão com espera dos outros scanners)
   useEffect(() => {
     let cancelled = false;
-    const load = async () => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const loop = async () => {
+      let running = false;
       try {
-        const r = await fetch('/api/trend', { signal: AbortSignal.timeout(5000) });
+        const r = await fetch('/api/trend?wait=1', { signal: AbortSignal.timeout(35000) });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const j: TrendInfo = await r.json();
-        if (!cancelled) setTrend(j);
+        if (cancelled) return;
+        setTrend(j);
+        running = Boolean(j.running);
       } catch {
         if (!cancelled) setTrend(null);
       }
+      if (!cancelled) timer = setTimeout(() => { void loop(); }, running ? 1000 : 60000);
     };
-    load();
-    const id = setInterval(load, 60000);
-    return () => { cancelled = true; clearInterval(id); };
+    void loop();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, []);
 
   const trendCount = trend?.watch?.length ?? 0;
@@ -235,7 +317,8 @@ export default function App() {
 
   const handleSaveSettings = (next: AppSettings) => {
     setSettings(next);
-    StorageService.saveSettings(next);
+    const at = StorageService.saveSettings(next);
+    if (reconciledRef.current) queueRef.current?.enqueue('settings', next, at);
   };
 
   const goTo = (tab: ScreenTab) => {
@@ -329,9 +412,12 @@ export default function App() {
   };
 
   const handleResetBalance = () => {
-    const fresh = StorageService.resetPaperAccount(10000, true, market);
-    accountsRef.current = { ...accountsRef.current, [market]: fresh };
-    setAccounts(accountsRef.current);
+    // Zera saldo e posições e mantém o histórico (grava local e no servidor)
+    const prev = accountsRef.current[market];
+    commitAccount(market, {
+      virtualBalance: 10000, initialBalance: 10000, totalTrades: 0, winTrades: 0, lossTrades: 0, totalFeesPaid: 0,
+      positions: [], closedHistory: prev.closedHistory || []
+    });
   };
 
   const handleClearHistory = () => {
@@ -341,6 +427,8 @@ export default function App() {
   const openSignals = signals.filter((s) => s.status === 'OPEN').length;
   const openSignalsBy = (m: MarketType) => signalsBy[m].filter((s) => s.status === 'OPEN').length;
   const showSwitch = activeTab === 'signals' || activeTab === 'wallet';
+
+  if (locked) return <AccessGate onUnlocked={() => { void reconcile(); }} />;
 
   return (
     <div className="min-h-screen bg-[#0f1115] text-slate-100 flex justify-center">
@@ -399,6 +487,7 @@ export default function App() {
 
           {activeTab === 'wallet' && (
             <WalletView
+              sync={{ status: syncStatus, info: storageInfo, blocked: localStore.isBlocked(), detail: syncDetail }}
               market={market}
               account={paperAccount}
               assets={market === 'futures' ? futuresAssets : assets}
@@ -420,7 +509,7 @@ export default function App() {
           {activeTab === 'backtest' && <BacktestView onBack={() => goTo('settings')} />}
 
           {activeTab === 'settings' && (
-            <SettingsView settings={settings} scanInfos={scanInfos} onSaveSettings={handleSaveSettings} onBack={() => goTo('signals')} onOpenBacktest={() => goTo('backtest')} />
+            <SettingsView settings={settings} scanInfos={scanInfos} sync={{ status: syncStatus, info: storageInfo, detail: syncDetail }} onSaveSettings={handleSaveSettings} onBack={() => goTo('signals')} onOpenBacktest={() => goTo('backtest')} />
           )}
         </main>
 

@@ -5,6 +5,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { getStateSafe, setStateSafe } from './stateStore';
 import { CandleData, MarketType } from '../src/types/crypto';
 import { calculateAllIndicators } from '../src/services/indicators';
 import { evaluateSignal, EngineSignal } from '../src/services/signalEngine';
@@ -132,7 +133,27 @@ export function createScanner(market: MarketType) {
   };
   let universe: Universe | null = null;
 
-  const load = () => {
+  const stateKey = `scan-${market}`;        // resultado completo da última varredura
+  const legacyKey = `signals-${market}`;    // formato anterior (só a lista de sinais)
+
+  /** Restaura o último resultado salvo: um servidor que acabou de ligar já responde com dados, sem esperar a varredura. */
+  const load = async () => {
+    const snap = await getStateSafe(stateKey);
+    if (snap?.value && Array.isArray(snap.value.signals)) {
+      const v = snap.value;
+      state.signals = v.signals;
+      state.lastScanAt = v.lastScanAt ?? null;
+      state.lastScanDurationMs = v.lastScanDurationMs ?? null;
+      state.lastError = v.lastError ?? null;
+      state.scannedPairs = v.scannedPairs ?? 0;
+      state.failedPairs = v.failedPairs ?? 0;
+      state.universe = v.universe ?? null;
+      state.dataSource = v.dataSource;
+      return;
+    }
+    const old = await getStateSafe(legacyKey);
+    if (old && Array.isArray(old.value)) { state.signals = old.value; return; }
+    // Migração: histórico antigo salvo em arquivo (antes do armazenamento do servidor)
     try {
       const parsed = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
       if (Array.isArray(parsed)) state.signals = parsed;
@@ -140,12 +161,8 @@ export function createScanner(market: MarketType) {
   };
 
   const save = () => {
-    try {
-      fs.mkdirSync(path.dirname(dataFile), { recursive: true });
-      fs.writeFileSync(dataFile, JSON.stringify(state.signals));
-    } catch (e) {
-      console.warn(`Não foi possível salvar histórico de sinais (${market}):`, e);
-    }
+    const { running: _running, ...snapshot } = state;
+    void setStateSafe(stateKey, snapshot);
   };
 
   async function fetchClosedCandles(symbol: string, tf: string, price: number): Promise<CandleData[]> {
@@ -162,8 +179,15 @@ export function createScanner(market: MarketType) {
     return calculateAllIndicators(parsed, decimals);
   }
 
-  async function run(): Promise<void> {
-    if (state.running) return;
+  let current: Promise<void> | null = null;
+
+  function run(): Promise<void> {
+    if (current) return current;
+    current = doRun().finally(() => { current = null; });
+    return current;
+  }
+
+  async function doRun(): Promise<void> {
     state.running = true;
     const started = Date.now();
     try {
@@ -227,7 +251,21 @@ export function createScanner(market: MarketType) {
     }
   }
 
-  return { market, state, load, run };
+  /** Dados mais velhos que isto (ms) disparam uma nova varredura quando alguém pede os sinais. */
+  const refreshIfStale = (maxAgeMs: number): Promise<void> | null => {
+    if (current) return current;
+    if (state.lastScanAt === null || Date.now() - state.lastScanAt > maxAgeMs) return run();
+    return null;
+  };
+
+  /** Espera a varredura em andamento por até `ms`. Manter a requisição aberta é o que dá processador a hospedagens
+   *  que só o liberam durante requisições (ex: Cloud Run), e assim a varredura termina. */
+  const waitForScan = async (ms: number): Promise<void> => {
+    if (!current) return;
+    await Promise.race([current, new Promise<void>((r) => setTimeout(r, ms))]);
+  };
+
+  return { market, state, load, run, refreshIfStale, waitForScan };
 }
 
 export const scanners = {
@@ -247,15 +285,33 @@ export function runScan(market: MarketType = 'spot'): Promise<void> {
   return scanners[market].run();
 }
 
+/** Intervalo (ms) a partir do qual os dados são considerados velhos e pedem nova varredura sob demanda. */
+export function staleAfterMs(): number {
+  return Math.max(1, Number(process.env.SCAN_INTERVAL_MINUTES) || 5) * 60e3;
+}
+
+/** Usado pela rota de sinais: dispara varredura se estiver velha e, opcionalmente, espera ela terminar. */
+export async function ensureScan(market: MarketType, waitMs = 0): Promise<void> {
+  if (process.env.SCANNER_ENABLED === 'false') return;
+  const sc = scanners[market];
+  sc.refreshIfStale(staleAfterMs());
+  if (waitMs > 0) await sc.waitForScan(waitMs);
+}
+
+/** Carrega o último resultado de cada scanner assim que o servidor liga. */
+export async function loadScanners(): Promise<void> {
+  const active: MarketType[] = process.env.FUTURES_ENABLED === 'false' ? ['spot'] : ['spot', 'futures'];
+  await Promise.all(active.map((m) => scanners[m].load()));
+}
+
 /** Inicia os scanners. Futuros pode ser desligado com FUTURES_ENABLED=false. */
 export function startScanner(intervalMinutes = 5) {
   const every = Math.max(1, intervalMinutes) * 60e3;
   const active: MarketType[] = process.env.FUTURES_ENABLED === 'false' ? ['spot'] : ['spot', 'futures'];
   active.forEach((m, i) => {
-    scanners[m].load();
     // Escalona o início para os dois scanners não dispararem as mesmas requisições ao mesmo tempo
     setTimeout(() => {
-      scanners[m].run();
+      scanners[m].refreshIfStale(every); // se o resultado restaurado ainda é recente, não repete a varredura
       setInterval(() => scanners[m].run(), every);
     }, i * 20000);
   });

@@ -1,0 +1,23 @@
+# Blueprint do Render: crie com "New → Blueprint" apontando para este repositório.
+# Região fora dos EUA (a Binance e a Bybit bloqueiam IPs de lá). Frankfurt é uma boa escolha.
+services:
+  - type: web
+    name: cryptoradar
+    runtime: docker
+    region: frankfurt
+    plan: free
+    healthCheckPath: /api/storage
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: APP_ACCESS_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false

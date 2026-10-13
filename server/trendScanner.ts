@@ -13,6 +13,7 @@ import { detectTrendEntry, updateTrendSignal, canEnter, splitClosed, TrendSignal
 import { binanceGet } from './universe';
 import { CLASSIC_2022 } from './backtestJob';
 import { sendTelegram } from './scanner';
+import { getStateSafe, setStateSafe } from './stateStore';
 
 const DATA_FILE = path.resolve(process.cwd(), 'data', 'trend-signals.json');
 const MAX_HISTORY = 300;
@@ -65,9 +66,21 @@ export function formatTrendAlert(s: TrendSignal, kind: 'entry' | 'exit'): string
   ].join('\n');
 }
 
-function load() {
+export async function loadTrendState() {
   if (process.env.TREND_PERSIST === 'off') return;
-  try {
+  const snap = await getStateSafe('trend-scan');
+  if (snap?.value && Array.isArray(snap.value.signals)) {
+    const v = snap.value;
+    state.signals = v.signals;
+    state.watch = v.watch ?? [];
+    state.regime = v.regime ?? null;
+    state.lastScanAt = v.lastScanAt ?? null;
+    state.lastError = v.lastError ?? null;
+    return;
+  }
+  const rec = await getStateSafe('trend-signals');
+  if (rec && Array.isArray(rec.value)) { state.signals = rec.value; return; }
+  try { // migração do arquivo antigo
     const parsed = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
     if (Array.isArray(parsed)) state.signals = parsed;
   } catch { /* primeira execução */ }
@@ -75,12 +88,8 @@ function load() {
 
 function save() {
   if (process.env.TREND_PERSIST === 'off') return;
-  try {
-    fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-    fs.writeFileSync(DATA_FILE, JSON.stringify(state.signals));
-  } catch (e) {
-    console.warn('Não foi possível salvar sinais de tendência:', e);
-  }
+  const { running: _running, ...snapshot } = state;
+  void setStateSafe('trend-scan', snapshot);
 }
 
 async function fetchDaily(symbol: string, limit: number): Promise<CandleData[]> {
@@ -102,8 +111,22 @@ export function getTrendState(): TrendState {
   return state;
 }
 
-export async function runTrendScan(): Promise<void> {
-  if (state.running) return;
+let currentTrend: Promise<void> | null = null;
+
+export function runTrendScan(): Promise<void> {
+  if (currentTrend) return currentTrend;
+  currentTrend = doTrendScan().finally(() => { currentTrend = null; });
+  return currentTrend;
+}
+
+/** Como nos scanners de sinais: dispara se estiver velho e opcionalmente espera (mantém a requisição aberta). */
+export async function ensureTrendScan(maxAgeMs = 30 * 60e3, waitMs = 0): Promise<void> {
+  if (process.env.SCANNER_ENABLED === 'false' || process.env.TREND_ENABLED === 'false') return;
+  if (!currentTrend && (state.lastScanAt === null || Date.now() - state.lastScanAt > maxAgeMs)) void runTrendScan();
+  if (waitMs > 0 && currentTrend) await Promise.race([currentTrend, new Promise<void>((r) => setTimeout(r, waitMs))]);
+}
+
+async function doTrendScan(): Promise<void> {
   state.running = true;
   try {
     const now = Date.now();
@@ -174,6 +197,5 @@ export async function runTrendScan(): Promise<void> {
 /** Inicia o scanner diário. Desligue com TREND_ENABLED=false. */
 export function startTrendScanner(intervalMinutes = 30) {
   if (process.env.TREND_ENABLED === 'false') return;
-  load();
-  setTimeout(() => { runTrendScan(); setInterval(runTrendScan, intervalMinutes * 60e3); }, 40000); // depois dos outros scanners
+  setTimeout(() => { void ensureTrendScan(intervalMinutes * 60e3); setInterval(runTrendScan, intervalMinutes * 60e3); }, 40000); // depois dos outros scanners
 }

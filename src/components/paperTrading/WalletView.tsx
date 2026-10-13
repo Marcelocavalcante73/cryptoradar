@@ -3,8 +3,11 @@ import { PaperAccount, PaperPosition, CryptoAsset, MarketType } from '../../type
 import { calculateAccountMetrics, positionUnrealizedPnl } from '../../services/paperTradingService';
 import { liquidationPrice } from '../../services/futures';
 import { fmtPrice, fmtUsd, fmtPct, pnlColor } from '../common/format';
+import { SyncNotice } from '../common/SyncNotice';
+import { SyncStatus, StorageInfo } from '../../services/remoteState';
 
 interface WalletViewProps {
+  sync?: { status: SyncStatus; info: StorageInfo | null; blocked: boolean; detail?: string | null };
   market: MarketType;
   account: PaperAccount;
   assets: CryptoAsset[];
@@ -37,7 +40,7 @@ export function historyToCsv(history: PaperPosition[]): string {
   return [head.join(','), ...rows].join('\n');
 }
 
-export const WalletView: React.FC<WalletViewProps> = ({ market, account, assets, onClosePosition, onResetBalance, onClearHistory, onSelectCoinBySymbol }) => {
+export const WalletView: React.FC<WalletViewProps> = ({ sync, market, account, assets, onClosePosition, onResetBalance, onClearHistory, onSelectCoinBySymbol }) => {
   const [confirm, setConfirm] = useState<null | 'balance' | 'history'>(null);
   const futures = market === 'futures';
   const metrics = calculateAccountMetrics(account, assets);
@@ -66,6 +69,8 @@ export const WalletView: React.FC<WalletViewProps> = ({ market, account, assets,
       <h2 className="text-lg font-semibold text-slate-100">
         Carteira simulada <span className="text-slate-500 font-normal">· {futures ? 'Futuros' : 'Spot'}</span>
       </h2>
+
+      {sync && <SyncNotice status={sync.status} info={sync.info} blocked={sync.blocked} detail={sync.detail} />}
 
       <div className={`${card} p-4`}>
         <div className="text-sm text-slate-400">Patrimônio</div>
