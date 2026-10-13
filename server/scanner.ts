@@ -68,7 +68,7 @@ export function formatTelegramAlert(s: EngineSignal, market: MarketType = 'spot'
   ].join('\n');
 }
 
-async function sendTelegram(text: string): Promise<boolean> {
+export async function sendTelegram(text: string): Promise<boolean> {
   const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
   const chatId = process.env.TELEGRAM_CHAT_ID?.trim();
   if (!token || token.length < 10 || !chatId) return false;

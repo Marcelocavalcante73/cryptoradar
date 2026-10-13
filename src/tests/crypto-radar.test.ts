@@ -56,8 +56,10 @@ import { historyToCsv } from '../components/paperTrading/WalletView';
 import { liquidationPrice, stopBeforeLiquidation, maxSafeLeverage, futuresSizing } from '../services/futures';
 import { positionUnrealizedPnl } from '../services/paperTradingService';
 import { summarizeBatch, riskCurve, withoutBest } from '../services/backtestBatch';
+import { detectTrendEntry, updateTrendSignal, canEnter, splitClosed, trendSignalResult, evaluateTrendReadiness, TrendSignal } from '../services/trendSignals';
 import { runTrendBacktest, btcRegimeByDay, TREND_RULES } from '../services/trendBacktest';
 import { startBatchJob, getBatchJob } from '../../server/backtestJob';
+import { runTrendScan, getTrendState, resetTrendState, formatTrendAlert } from '../../server/trendScanner';
 import { evaluateSignal, scoreCandles, MIN_SCORE } from '../services/signalEngine';
 import { StorageService, INITIAL_PAPER_ACCOUNT } from '../services/storageService';
 import { CandleData, CryptoAsset, PaperAccount } from '../types/crypto';
@@ -1293,6 +1295,140 @@ console.log('\n--- Tendência: rompimento de 55 dias ---');
   assert(cj.status === 'done' && cj.total === 17 && cj.done === 17, 'Lista fixa de 2022 testa as 17 moedas sem consultar o ranking', `${cj.status} ${cj.done}/${cj.total} ${cj.error ?? ''}`);
   assert(symbolsAsked.has('BTCUSDT') && symbolsAsked.has('ETCUSDT') && symbolsAsked.has('LTCUSDT'), 'A lista inclui moedas que ficaram para trás (ETC, LTC) e o BTC');
   globalThis.fetch = realFetchC;
+}
+
+// ============================================================================
+// SINAIS DIÁRIOS DE TENDÊNCIA: O AO VIVO TEM DE COINCIDIR COM O BACKTEST
+// ============================================================================
+console.log('\n--- Tendência ao vivo vs backtest ---');
+{
+  const DAYMS = 86400000;
+  const T0 = 1_600_000_000_000;
+  const series = (seed0: number, n: number, drift: number): CandleData[] => {
+    let seed = seed0;
+    const rnd = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296 - 0.5; };
+    let p = 100;
+    return Array.from({ length: n }, (_, i) => {
+      const o = p;
+      p *= 1 + drift + Math.sin(i / 40) * 0.012 + rnd() * 0.05;
+      return { time: String(i), timestamp: T0 + i * DAYMS, open: o, high: Math.max(o, p) * (1 + Math.abs(rnd()) * 0.02), low: Math.min(o, p) * (1 - Math.abs(rnd()) * 0.02), close: p, volume: 1000 };
+    });
+  };
+
+  // Reproduz o que o scanner veria a cada dia: só velas fechadas e a abertura do dia em andamento (sem ver o futuro)
+  const replay = (coin: CandleData[], btc: CandleData[]): TrendSignal[] => {
+    const signals: TrendSignal[] = [];
+    for (let d = 1; d < coin.length; d++) {
+      const now = T0 + d * DAYMS + 3_600_000; // 1h depois da abertura do dia d
+      const mask = (c: CandleData): CandleData => ({ ...c, high: c.open, low: c.open, close: c.open }); // dia em andamento: só a abertura
+      const visible = [...coin.slice(0, d), mask(coin[d])];
+      for (let k = 0; k < signals.length; k++) signals[k] = updateTrendSignal(signals[k], visible, now);
+      const { closed } = splitClosed(visible, now);
+      const btcClosed = btc.slice(0, d);
+      const reg = btcRegimeByDay(btcClosed).get(Math.floor(btcClosed[btcClosed.length - 1].timestamp / DAYMS)) === true;
+      const sig = detectTrendEntry(closed, reg, 'AAAUSDT', 'AAA', now);
+      if (sig && canEnter(signals, 'AAAUSDT', sig.signalDay)) signals.push(sig);
+    }
+    return signals;
+  };
+
+  let totalCompared = 0;
+  for (const [seed, drift] of [[11, 0.002], [23, 0.003], [47, 0.001], [91, 0.0025]] as [number, number][]) {
+    const coin = series(seed, 700, drift);
+    const btc = series(seed + 1, 700, 0.002);
+    const bt = runTrendBacktest(coin, btc, 'AAAUSDT').trades.filter((t) => t.exit !== 'TIMEOUT');
+    const live = replay(coin, btc).filter((s) => s.status === 'STOPPED' || s.status === 'CLOSED');
+    totalCompared += bt.length;
+    assert(live.length === bt.length, `Série ${seed}: ao vivo gera o mesmo número de operações encerradas que o backtest`, `ao vivo=${live.length} backtest=${bt.length}`);
+    const same = bt.every((t, k) =>
+      Math.abs(live[k].entryPrice! - t.entryPrice) < 1e-9 &&
+      Math.abs(live[k].exitPrice! - t.exitPrice) < 1e-9 &&
+      (live[k].status === 'STOPPED') === (t.exit === 'STOP'));
+    assert(same, `Série ${seed}: entradas, saídas e tipo de saída idênticos ao backtest`);
+    const r = trendSignalResult(live[0] ?? ({} as TrendSignal));
+    if (live.length) assert(!!r && Math.abs(r.netPct - bt[0].netPct) < 1e-9 && Math.abs(r.r - bt[0].rMultiple) < 1e-9, `Série ${seed}: resultado líquido e em R idênticos ao backtest`);
+  }
+  assert(totalCompared >= 8, 'A comparação cobre operações suficientes para valer', String(totalCompared));
+
+  // Estados intermediários
+  const coin = series(11, 700, 0.002);
+  const btc = series(12, 700, 0.002);
+  const full = replay(coin, btc);
+  assert(full.every((s) => s.id === `AAAUSDT-${s.signalDay}`), 'Id do sinal = moeda + dia do rompimento (sem repetir alerta)');
+  const pending = detectTrendEntry(splitClosed(coin.slice(0, 300), T0 + 299 * DAYMS + DAYMS + 1).closed, true, 'AAAUSDT', 'AAA');
+  if (pending) {
+    const pendente = updateTrendSignal(pending, coin.slice(0, 300), T0 + 300 * DAYMS - 1);
+    assert(pendente.entryPrice === undefined && pendente.status === 'OPEN', 'Antes de o dia da entrada começar o sinal fica pendente (sem preço de entrada)');
+  }
+  assert(canEnter([], 'XUSDT', 1) && !canEnter([{ symbol: 'XUSDT', status: 'OPEN', signalDay: 1 } as TrendSignal], 'XUSDT', 99), 'Uma posição por moeda: com sinal aberto não entra outro');
+  assert(canEnter([{ symbol: 'XUSDT', status: 'CLOSED', closedAt: 10 } as TrendSignal], 'XUSDT', 11) && !canEnter([{ symbol: 'XUSDT', status: 'CLOSED', closedAt: 10 } as TrendSignal], 'XUSDT', 10), 'Nova entrada só em dia posterior ao da saída anterior (como no backtest)');
+
+  // Semáforo da estratégia (em meses, não em semanas)
+  const mkS = (netPct: number, createdDaysAgo: number): TrendSignal => ({
+    id: String(Math.random()), symbol: 'X', baseAsset: 'X', signalDay: 0, createdAt: Date.now() - createdDaysAgo * DAYMS, refPrice: 100, entryPrice: 100,
+    stopPrice: 90, atr: 5, exitLevel: 90, status: 'CLOSED', exitPrice: 100 * (1 + (netPct + 0.3) / 100)
+  });
+  const good = [...Array.from({ length: 4 }, () => mkS(30, 100)), ...Array.from({ length: 8 }, () => mkS(-5, 90))];
+  assert(evaluateTrendReadiness(good).status === 'ready', '12 operações em 100 dias com fator de lucro 3,0 => pronto (valor pequeno)');
+  assert(evaluateTrendReadiness([mkS(30, 20), mkS(-5, 15)]).status === 'collecting', 'Poucas operações e poucos dias => ainda coletando');
+  const bad = Array.from({ length: 12 }, (_, i) => mkS(i % 4 === 0 ? 8 : -6, 100));
+  assert(evaluateTrendReadiness(bad).status === 'failed', 'Dados suficientes e resultado negativo ao vivo => reprovado');
+}
+
+// Scanner diário no servidor, com a Binance simulada
+{
+  process.env.TREND_PERSIST = 'off';
+  const DAY2 = 86400000;
+  const todayStart = Math.floor(Date.now() / DAY2) * DAY2;
+  const realFetchD = globalThis.fetch;
+  let btcBullishMock = true;
+  const klinesFor = (isBtc: boolean) => {
+    // 300 dias fechados + o dia de hoje em andamento (só a abertura conhecida)
+    const rows: any[] = [];
+    for (let i = 0; i < 301; i++) {
+      const ts = todayStart - (300 - i) * DAY2;
+      const lastClosed = i === 299, today = i === 300;
+      let close = 100 + Math.sin(i / 3) * 0.4;
+      if (isBtc && !btcBullishMock) close = 200 * Math.pow(0.995, i); // BTC em queda constante
+      if (lastClosed && !(isBtc && !btcBullishMock)) close = 130; // rompimento ontem
+      const open = today ? (isBtc && !btcBullishMock ? close : 131) : close - 0.2;
+      const o = today ? open : open;
+      const h = today ? o : Math.max(o, close) * 1.002;
+      const l = today ? o : Math.min(o, close) * 0.998;
+      rows.push([ts, String(o), String(h), String(l), String(today ? o : close), '1000', ts + DAY2 - 1, '0', 0, '0', '0', '0']);
+    }
+    return rows;
+  };
+  globalThis.fetch = ((url: any) => {
+    const u = String(url);
+    if (u.includes('/api/v3/klines')) {
+      const sym = new URL(u).searchParams.get('symbol');
+      return Promise.resolve(new Response(JSON.stringify(klinesFor(sym === 'BTCUSDT')), { status: 200 }));
+    }
+    return Promise.reject(new Error('url inesperada: ' + u));
+  }) as typeof fetch;
+
+  resetTrendState();
+  await runTrendScan();
+  const st = getTrendState();
+  assert(st.regime?.bullish === true && st.lastError === null, 'Scanner lê o regime do Bitcoin e termina sem erro', String(st.lastError));
+  assert(st.signals.length === 17 && st.watch.length === 17, 'Rompimento em todas as 17 moedas gera 17 sinais e a lista de observação completa', `${st.signals.length}/${st.watch.length}`);
+  const sg = st.signals[0];
+  assert(sg.entryPrice === 131 && Math.abs(sg.stopPrice - (131 - 2 * sg.atr)) < 1e-9, 'Entrada = abertura de hoje (131) e stop = entrada − 2 ATR');
+  assert(sg.refPrice === 130 && sg.status === 'OPEN', 'Referência = fechamento de ontem; posição aberta');
+  assert(st.watch[0].distancePct <= st.watch[16].distancePct, 'Lista de observação ordenada pelas moedas mais perto de romper');
+  await runTrendScan();
+  assert(getTrendState().signals.length === 17, 'Nova varredura não duplica sinais nem alertas');
+
+  const entryMsg = formatTrendAlert(sg, 'entry');
+  assert(entryMsg.includes('COMPRAR') && entryMsg.includes('Stop:') && entryMsg.includes('Sem alvo fixo'), 'Alerta de entrada traz stop e avisa que não há alvo fixo');
+  assert(formatTrendAlert({ ...sg, status: 'EXIT_SIGNAL' }, 'exit').includes('abertura de hoje') && formatTrendAlert({ ...sg, status: 'STOPPED', exitPrice: 120 }, 'exit').includes('stop atingido'), 'Alertas de saída: pela tendência e pelo stop');
+
+  btcBullishMock = false;
+  resetTrendState();
+  await runTrendScan();
+  assert(getTrendState().regime?.bullish === false && getTrendState().signals.length === 0, 'Bitcoin em queda (abaixo da média de 200 dias): nenhuma entrada nova');
+  globalThis.fetch = realFetchD;
 }
 
 console.log('\n========================================================');

@@ -1,25 +1,27 @@
 import React from 'react';
-import { Radio, Wallet, TrendingUp } from 'lucide-react';
+import { Radio, Wallet, TrendingUp, Activity } from 'lucide-react';
 
-export type ScreenTab = 'signals' | 'wallet' | 'market' | 'settings' | 'details' | 'backtest';
+export type ScreenTab = 'signals' | 'wallet' | 'market' | 'settings' | 'details' | 'backtest' | 'trend';
 
 interface BottomNavProps {
   activeTab: ScreenTab;
   onSelectTab: (tab: ScreenTab) => void;
   openSignals: number;
   openPositions: number;
+  openTrend?: number;
 }
 
-export const BottomNav: React.FC<BottomNavProps> = ({ activeTab, onSelectTab, openSignals, openPositions }) => {
+export const BottomNav: React.FC<BottomNavProps> = ({ activeTab, onSelectTab, openSignals, openPositions, openTrend = 0 }) => {
   const items = [
     { id: 'signals' as ScreenTab, label: 'Sinais', icon: Radio, count: openSignals },
+    { id: 'trend' as ScreenTab, label: 'Tendência', icon: Activity, count: openTrend },
     { id: 'wallet' as ScreenTab, label: 'Carteira', icon: Wallet, count: openPositions },
     { id: 'market' as ScreenTab, label: 'Mercado', icon: TrendingUp, count: 0 }
   ];
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-40 bg-[#0f1115] border-t border-[#23272f] safe-area-pb">
-      <div className="max-w-2xl mx-auto grid grid-cols-3">
+      <div className="max-w-2xl mx-auto grid grid-cols-4">
         {items.map((item) => {
           const Icon = item.icon;
           const active = activeTab === item.id || (item.id === 'market' && activeTab === 'details');

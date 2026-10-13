@@ -176,7 +176,7 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
       {sum && a && job && (
         <>
           <p className="text-xs text-slate-500">
-            Resultado de {job.params.strategy === 'trend' ? 'Rompimento de 55 dias (spot, diário)' : `${job.params.market === 'futures' ? 'Futuros' : 'Spot'} · ${job.params.tf}`} · {job.params.top} moedas
+            Resultado de {job.params.strategy === 'trend' ? 'Rompimento de 55 dias (spot, diário)' : `${job.params.market === 'futures' ? 'Futuros' : 'Spot'} · ${job.params.tf}`} · {job.params.list === 'classic2022' ? '17 moedas (Grandes de 2022)' : `${job.params.top} moedas`}
           </p>
 
           <section className={card}>

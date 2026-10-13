@@ -14,13 +14,14 @@ export interface TradeRequest {
   price: number;
   amountUSDT: number;      // margem (em spot, o valor da compra)
   stopLossPrice: number;
-  targetPrice: number;
+  targetPrice?: number; // ausente em estratégias sem alvo fixo (tendência)
 }
 
 interface TradeSheetProps {
   market: MarketType;
   asset: CryptoAsset | null;
   signal?: TechnicalSignal | null;
+  noTarget?: boolean;       // tendência: só stop e saída pela tendência
   balance: number;
   riskPercent: number;      // % do saldo arriscado por operação
   defaultStopPercent: number;
@@ -42,7 +43,7 @@ export function suggestAmount(balance: number, price: number, stop: number, risk
 }
 
 export const TradeSheet: React.FC<TradeSheetProps> = ({
-  market, asset, signal, balance, riskPercent, defaultStopPercent, defaultRewardRatio, defaultLeverage, onClose, onConfirm
+  market, asset, signal, noTarget = false, balance, riskPercent, defaultStopPercent, defaultRewardRatio, defaultLeverage, onClose, onConfirm
 }) => {
   const futures = market === 'futures';
   const price = asset?.price ?? signal?.entryPrice ?? 0;
@@ -85,7 +86,7 @@ export const TradeSheet: React.FC<TradeSheetProps> = ({
   const a = toNum(amount), st = toNum(stop), tg = toNum(target);
   const stopOk = st > 0 && (direction === 'LONG' ? st < price : st > price);
   const targetOk = tg > 0 && (direction === 'LONG' ? tg > price : tg < price);
-  const valid = Number.isFinite(a) && a > 0 && stopOk && targetOk;
+  const valid = Number.isFinite(a) && a > 0 && stopOk && (noTarget || targetOk);
 
   const safeLev = stopOk ? maxSafeLeverage(price, st) : 1;
   const liq = liquidationPrice(direction, price, leverage);
@@ -98,7 +99,7 @@ export const TradeSheet: React.FC<TradeSheetProps> = ({
     return {
       notional,
       maxLoss: (notional * Math.abs(price - st)) / price + fees,
-      gain: (notional * Math.abs(tg - price)) / price - fees
+      gain: noTarget ? 0 : (notional * Math.abs(tg - price)) / price - fees
     };
   }, [valid, a, leverage, st, tg, price]);
 
@@ -119,7 +120,7 @@ export const TradeSheet: React.FC<TradeSheetProps> = ({
         : 'Confira os valores: em short, o stop deve ficar acima do preço atual e o alvo abaixo.');
     }
     if (!stopProtects) return setError('Com essa alavancagem a liquidação acontece antes do stop. Reduza a alavancagem ou aproxime o stop.');
-    const res = onConfirm({ symbol: asset.symbol, direction, leverage, price, amountUSDT: a, stopLossPrice: st, targetPrice: tg });
+    const res = onConfirm({ symbol: asset.symbol, direction, leverage, price, amountUSDT: a, stopLossPrice: st, targetPrice: noTarget ? undefined : tg });
     if (!res.success) setError(res.error || 'Não foi possível abrir a simulação.');
   };
 
@@ -177,16 +178,19 @@ export const TradeSheet: React.FC<TradeSheetProps> = ({
           <input className={field} inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
         </label>
 
-        <div className="grid grid-cols-2 gap-3 mb-4">
+        <div className={`grid ${noTarget ? 'grid-cols-1' : 'grid-cols-2'} gap-3 mb-4`}>
           <label className="block">
             <span className="text-sm text-slate-400">Stop</span>
             <input className={field} inputMode="decimal" value={stop} onChange={(e) => setStop(e.target.value)} />
           </label>
-          <label className="block">
-            <span className="text-sm text-slate-400">Alvo</span>
-            <input className={field} inputMode="decimal" value={target} onChange={(e) => setTarget(e.target.value)} />
-          </label>
+          {!noTarget && (
+            <label className="block">
+              <span className="text-sm text-slate-400">Alvo</span>
+              <input className={field} inputMode="decimal" value={target} onChange={(e) => setTarget(e.target.value)} />
+            </label>
+          )}
         </div>
+        {noTarget && <p className="text-xs text-slate-500 -mt-2 mb-4">Sem alvo fixo: saia pelo stop ou quando o app avisar que fechou abaixo da mínima de 20 dias.</p>}
 
         {calc && (
           <div className="grid grid-cols-2 gap-3 mb-4 text-sm">
@@ -206,10 +210,12 @@ export const TradeSheet: React.FC<TradeSheetProps> = ({
               <div className="text-slate-500">Perda máxima</div>
               <div className="text-rose-400 font-medium">{fmtUsd(-calc.maxLoss)} ({((calc.maxLoss / balance) * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}% do saldo)</div>
             </div>
-            <div>
-              <div className="text-slate-500">Ganho no alvo</div>
-              <div className="text-emerald-400 font-medium">{fmtUsd(calc.gain, true)}</div>
-            </div>
+            {!noTarget && (
+              <div>
+                <div className="text-slate-500">Ganho no alvo</div>
+                <div className="text-emerald-400 font-medium">{fmtUsd(calc.gain, true)}</div>
+              </div>
+            )}
           </div>
         )}
 
