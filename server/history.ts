@@ -1,6 +1,7 @@
 import { CandleData, MarketType } from '../src/types/crypto';
 import { parseBinanceKline } from '../src/services/apiService';
 import { binanceGet } from './universe';
+import { futuresKlines } from './futuresData';
 
 /**
  * Baixa até `bars` candles FECHADOS da Binance (paginando de 1000 em 1000, do mais recente para trás).
@@ -13,12 +14,9 @@ export async function fetchHistory(symbol: string, tf: string, bars: number, pri
 
   while (all.length < bars) {
     const limit = Math.min(1000, bars - all.length);
-    const base = market === 'futures' ? '/fapi/v1/klines' : '/api/v3/klines';
-    const raw: any[] = await binanceGet(
-      `${base}?symbol=${symbol}&interval=${tf}&limit=${limit}${endTime ? `&endTime=${endTime}` : ''}`,
-      8000,
-      market
-    );
+    const raw: any[] = market === 'futures'
+      ? await futuresKlines(symbol, tf, limit, endTime) // Binance → Bybit → OKX
+      : await binanceGet(`/api/v3/klines?symbol=${symbol}&interval=${tf}&limit=${limit}${endTime ? `&endTime=${endTime}` : ''}`, 8000, 'spot');
     if (!Array.isArray(raw) || raw.length === 0) break;
     const page: CandleData[] = [];
     for (const k of raw) {

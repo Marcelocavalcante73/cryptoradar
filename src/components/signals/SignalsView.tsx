@@ -14,6 +14,8 @@ export interface ScanInfo {
   universeCount: number;
   exchanges?: string[];
   market?: MarketType;
+  dataSource?: string;        // futuros: corretora de onde vêm os dados (binance, bybit, okx)
+  unverified?: string[];      // corretoras que não puderam ser consultadas a partir do servidor
   skipped: string[];
   coins?: { rank: number; baseAsset: string; name: string; symbol: string }[];
   running: boolean;

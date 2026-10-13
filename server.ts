@@ -9,6 +9,7 @@ import { runBacktest } from './src/services/backtest';
 import { binanceGet } from './server/universe';
 import { getBatchJob, startBatchJob } from './server/backtestJob';
 import { getTrendState, runTrendScan, startTrendScanner } from './server/trendScanner';
+import { futuresKlines, futuresPrices, getFuturesProvider } from './server/futuresData';
 
 dotenv.config();
 
@@ -212,28 +213,21 @@ app.post('/api/scan', (req: Request, res: Response) => {
  * GET /api/futures/prices?symbols=BTCUSDT,ETHUSDT — preços dos perpétuos USDT-M (proxy da Binance, cache curto).
  * Os preços de futuros diferem um pouco dos de spot; a carteira de futuros precisa dos preços do próprio contrato.
  */
-let futuresPriceCache: { at: number; map: Record<string, number> } | null = null;
-
 app.get('/api/futures/prices', async (req: Request, res: Response) => {
   const wanted = String(req.query.symbols || '').split(',').map((x) => x.trim().toUpperCase()).filter((x) => /^[A-Z0-9]{3,20}USDT$/.test(x));
   if (wanted.length === 0) return res.status(400).json({ error: 'Informe symbols (ex: BTCUSDT,ETHUSDT).' });
   try {
-    if (!futuresPriceCache || Date.now() - futuresPriceCache.at > 3000) {
-      const raw = await binanceGet('/fapi/v1/ticker/price', 5000, 'futures');
-      const map: Record<string, number> = {};
-      for (const t of raw as any[]) map[t.symbol] = parseFloat(t.price);
-      futuresPriceCache = { at: Date.now(), map };
-    }
+    const all = await futuresPrices(wanted); // Binance → Bybit → OKX
     const prices: Record<string, number> = {};
-    for (const sym of wanted) if (Number.isFinite(futuresPriceCache.map[sym])) prices[sym] = futuresPriceCache.map[sym];
-    res.json({ prices });
+    for (const sym of wanted) { const px = all.get(sym); if (px !== undefined && Number.isFinite(px)) prices[sym] = px; }
+    res.json({ prices, source: getFuturesProvider() });
   } catch (e: any) {
     res.status(502).json({ error: `Falha ao consultar preços de futuros: ${e?.message ?? 'indisponível'}` });
   }
 });
 
 /**
- * GET /api/futures/klines?symbol=BTCUSDT&interval=4h&limit=300 — candles dos perpétuos (proxy da Binance).
+ * GET /api/futures/klines?symbol=BTCUSDT&interval=4h&limit=300 — candles dos perpétuos, no formato da Binance.
  */
 app.get('/api/futures/klines', async (req: Request, res: Response) => {
   const symbol = String(req.query.symbol || '').toUpperCase();
@@ -242,7 +236,7 @@ app.get('/api/futures/klines', async (req: Request, res: Response) => {
   if (!/^[A-Z0-9]{3,20}USDT$/.test(symbol)) return res.status(400).json({ error: 'symbol inválido.' });
   if (!['15m', '1h', '4h', '1d', '1w'].includes(interval)) return res.status(400).json({ error: 'interval inválido.' });
   try {
-    res.json(await binanceGet(`/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`, 8000, 'futures'));
+    res.json(await futuresKlines(symbol, interval, limit));
   } catch (e: any) {
     res.status(502).json({ error: `Falha ao consultar candles de futuros: ${e?.message ?? 'indisponível'}` });
   }

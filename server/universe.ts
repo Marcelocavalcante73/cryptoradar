@@ -7,6 +7,7 @@
 import fs from 'fs';
 import path from 'path';
 import { MarketType } from '../src/types/crypto';
+import { futuresSymbolsFrom } from './futuresData';
 
 export const STABLECOINS = new Set([
   'USDT', 'USDC', 'DAI', 'FDUSD', 'TUSD', 'USDE', 'USDS', 'PYUSD', 'BUSD', 'USDD', 'USD1', 'USDG', 'RLUSD',
@@ -28,6 +29,7 @@ export type ExchangeName = 'binance' | 'bybit';
 export interface Universe {
   source: 'COINMARKETCAP' | 'COINGECKO' | 'COINPAPRIKA';
   stale?: boolean; // ranking vindo do cache (as fontes online falharam)
+  unverified?: ExchangeName[]; // corretoras que não puderam ser consultadas (ex: Binance de futuros bloqueada na região do servidor)
   fetchedAt: number;
   exchanges: ExchangeName[]; // corretoras que precisam listar o par (interseção)
   coins: UniverseCoin[];
@@ -237,15 +239,34 @@ export function resolveFuturesSymbol(sym: string, available: Set<string>): strin
 export async function buildUniverse(market: MarketType = 'spot'): Promise<Universe> {
   const exchanges = requiredExchanges();
   const futures = market === 'futures';
-  const [top, binancePrices, bybitPairs] = await Promise.all([
-    fetchTop100(),
-    // Sempre necessário: fonte dos candles e do preço. Em futuros, só os perpétuos USDT (sem contratos com vencimento)
-    binanceGet(futures ? '/fapi/v1/ticker/price' : '/api/v3/ticker/price', 8000, market),
-    exchanges.includes('bybit') ? fetchBybitSymbols(futures ? 'linear' : 'spot') : Promise.resolve(null)
-  ]);
-  const binancePairs = new Set<string>(
-    (binancePrices as any[]).map((p) => String(p.symbol)).filter((sym) => !futures || /^[A-Z0-9]+USDT$/.test(sym))
-  );
+  const top = await fetchTop100();
+  const unverified: ExchangeName[] = [];
+  let binancePairs: Set<string> | null = null;
+  let bybitPairs: Set<string> | null = null;
+
+  if (futures) {
+    // Binance e Bybit de futuros podem estar bloqueadas na região do servidor: usa as que responderem.
+    // A Bybit é sempre consultada em futuros (serve de lista de reserva), mas só entra na interseção se estiver exigida.
+    [binancePairs, bybitPairs] = await Promise.all([
+      futuresSymbolsFrom('binance').catch(() => null),
+      fetchBybitSymbols('linear').catch(() => null)
+    ]);
+    if (!binancePairs) unverified.push('binance');
+    if (exchanges.includes('bybit') && !bybitPairs) unverified.push('bybit');
+    if (!binancePairs && !bybitPairs) {
+      const okxPairs = await futuresSymbolsFrom('okx').catch(() => null);
+      if (!okxPairs) throw new Error('Não foi possível listar os perpétuos: Binance, Bybit e OKX indisponíveis a partir deste servidor');
+      binancePairs = okxPairs; // lista de referência; nenhuma das corretoras pôde ser verificada
+      if (!unverified.includes('bybit')) unverified.push('bybit');
+    }
+  } else {
+    const [bn, by] = await Promise.all([
+      binanceGet('/api/v3/ticker/price', 8000, 'spot'),
+      exchanges.includes('bybit') ? fetchBybitSymbols('spot') : Promise.resolve(null)
+    ]);
+    binancePairs = new Set<string>((bn as any[]).map((p) => String(p.symbol)));
+    bybitPairs = by;
+  }
 
   const coins: UniverseCoin[] = [];
   const skipped: string[] = [];
@@ -255,17 +276,19 @@ export async function buildUniverse(market: MarketType = 'spot'): Promise<Univer
     let symbol = `${it.sym}USDT`;
 
     if (futures) {
-      const onBinance = resolveFuturesSymbol(it.sym, binancePairs);
-      if (!onBinance) missing.push('Binance');
-      else symbol = onBinance;
-      if (bybitPairs && !bybitPairs.has(symbol)) missing.push('Bybit'); // mesmo contrato nas duas corretoras
+      const ref = binancePairs ?? bybitPairs!;
+      const resolved = resolveFuturesSymbol(it.sym, ref);
+      if (!resolved) missing.push(binancePairs ? 'Binance' : 'Bybit');
+      else symbol = resolved;
+      // quando as duas listas existem, o mesmo contrato precisa estar nas duas
+      if (exchanges.includes('bybit') && binancePairs && bybitPairs && !(resolved ? bybitPairs.has(symbol) : resolveFuturesSymbol(it.sym, bybitPairs))) missing.push('Bybit');
     } else {
-      if (!binancePairs.has(symbol)) missing.push('Binance'); // candles vêm da Binance, então o par precisa existir nela
+      if (!binancePairs!.has(symbol)) missing.push('Binance'); // candles vêm da Binance, então o par precisa existir nela
       if (bybitPairs && !bybitPairs.has(symbol)) missing.push('Bybit');
     }
 
     if (missing.length === 0) coins.push({ rank: it.rank, baseAsset: it.sym, name: it.name, symbol, marketCap: it.mcap });
     else skipped.push(`${it.sym} [sem ${missing.join(' e ')}]`);
   }
-  return { source: top.source, stale: top.stale, fetchedAt: Date.now(), exchanges, coins, skipped };
+  return { source: top.source, stale: top.stale, unverified: unverified.length ? unverified : undefined, fetchedAt: Date.now(), exchanges, coins, skipped };
 }

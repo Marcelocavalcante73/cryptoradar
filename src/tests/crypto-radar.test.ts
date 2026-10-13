@@ -59,6 +59,7 @@ import { summarizeBatch, riskCurve, withoutBest } from '../services/backtestBatc
 import { detectTrendEntry, updateTrendSignal, canEnter, splitClosed, trendSignalResult, evaluateTrendReadiness, TrendSignal } from '../services/trendSignals';
 import { runTrendBacktest, btcRegimeByDay, TREND_RULES } from '../services/trendBacktest';
 import { startBatchJob, getBatchJob } from '../../server/backtestJob';
+import { futuresKlines, futuresPrices, futuresSymbolsFrom, getFuturesProvider, resetFuturesProvider, toOkxInstrument } from '../../server/futuresData';
 import { runTrendScan, getTrendState, resetTrendState, formatTrendAlert } from '../../server/trendScanner';
 import { evaluateSignal, scoreCandles, MIN_SCORE } from '../services/signalEngine';
 import { StorageService, INITIAL_PAPER_ACCOUNT } from '../services/storageService';
@@ -1429,6 +1430,97 @@ console.log('\n--- Tendência ao vivo vs backtest ---');
   await runTrendScan();
   assert(getTrendState().regime?.bullish === false && getTrendState().signals.length === 0, 'Bitcoin em queda (abaixo da média de 200 dias): nenhuma entrada nova');
   globalThis.fetch = realFetchD;
+}
+
+// ============================================================================
+// DADOS DE FUTUROS COM FONTES ALTERNATIVAS (BINANCE → BYBIT → OKX)
+// ============================================================================
+console.log('\n--- Futuros: fontes alternativas ---');
+{
+  const realFetchF2 = globalThis.fetch;
+  const calls: string[] = [];
+  const blocked = new Set<string>();
+  const respond = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  const T = 1_700_000_000_000, H = 3_600_000;
+  globalThis.fetch = ((url: any) => {
+    const u = String(url);
+    const host = u.includes('fapi.binance.com') ? 'binance' : u.includes('bybit.com') ? 'bybit' : u.includes('okx.com') ? 'okx' : 'x';
+    calls.push(`${host}:${u}`);
+    if (blocked.has(host)) return Promise.resolve(new Response('blocked', { status: host === 'binance' ? 451 : 403 }));
+    if (host === 'binance' && u.includes('/klines')) return respond([[T, '1', '2', '0.5', '1.5', '10', T + H - 1], [T + H, '1.5', '2', '1', '1.8', '11', T + 2 * H - 1]]);
+    if (host === 'binance' && u.includes('/ticker/price')) return respond([{ symbol: 'BTCUSDT', price: '64000' }, { symbol: 'ETHUSDT', price: '3100' }, { symbol: 'BTCUSDT_250627', price: '1' }]);
+    if (host === 'bybit' && u.includes('/kline')) return respond({ retCode: 0, result: { list: [[String(T + H), '1.5', '2', '1', '1.8', '11', '0'], [String(T), '1', '2', '0.5', '1.5', '10', '0']] } }); // mais novo primeiro
+    if (host === 'bybit' && u.includes('/tickers')) return respond({ retCode: 0, result: { list: [{ symbol: 'BTCUSDT', lastPrice: '64010' }, { symbol: '1000PEPEUSDT', lastPrice: '0.0125' }] } });
+    if (host === 'okx' && u.includes('history-candles')) return respond({ code: '0', data: [[String(T + H), '0.0000015', '0.000002', '0.000001', '0.0000018', '11'], [String(T), '0.000001', '0.000002', '0.0000005', '0.0000015', '10']] });
+    if (host === 'okx' && u.includes('/tickers')) return respond({ code: '0', data: [{ instId: 'BTC-USDT-SWAP', last: '64020' }, { instId: 'PEPE-USDT-SWAP', last: '0.0000125' }] });
+    return Promise.reject(new Error('url inesperada: ' + u));
+  }) as typeof fetch;
+
+  // 1) tudo no ar: usa a Binance
+  resetFuturesProvider();
+  let k = await futuresKlines('BTCUSDT', '1h', 2);
+  assert(getFuturesProvider() === 'binance' && k.length === 2 && k[0][0] === T, 'Binance no ar: usa a Binance');
+
+  // 2) Binance bloqueada (451): cai para a Bybit e devolve do mais antigo para o mais novo
+  blocked.add('binance'); resetFuturesProvider();
+  k = await futuresKlines('BTCUSDT', '1h', 2);
+  assert(getFuturesProvider() === 'bybit', 'Binance bloqueada (451): usa a Bybit');
+  assert(k[0][0] === T && k[1][0] === T + H && k[0][4] === '1.5' && k[1][6] === T + 2 * H - 1, 'Candles da Bybit convertidos: ordem do mais antigo ao mais novo, no formato da Binance');
+
+  // 3) memoriza a fonte que funcionou: a próxima chamada nem tenta a Binance
+  calls.length = 0;
+  await futuresKlines('BTCUSDT', '1h', 2);
+  assert(!calls.some((c) => c.startsWith('binance:')) && calls[0].startsWith('bybit:'), 'Lembra a fonte que funcionou e não espera a que falha');
+
+  // 4) Bybit também bloqueada: OKX, com o preço das moedas "1000" ajustado
+  blocked.add('bybit'); resetFuturesProvider();
+  k = await futuresKlines('1000PEPEUSDT', '1h', 2);
+  assert(getFuturesProvider() === 'okx' && calls.some((c) => c.includes('instId=PEPE-USDT-SWAP')), 'Binance e Bybit bloqueadas: usa a OKX (contrato PEPE-USDT-SWAP)');
+  assert(Math.abs(Number(k[0][4]) - 0.0015) < 1e-12 && Math.abs(Number(k[1][4]) - 0.0018) < 1e-12 && k[0][0] === T, 'Preço da OKX multiplicado por 1000 para casar com 1000PEPEUSDT; ordem crescente');
+  const pr = await futuresPrices(['BTCUSDT', '1000PEPEUSDT', 'ZZZUSDT']);
+  assert(pr.get('BTCUSDT') === 64020 && Math.abs(pr.get('1000PEPEUSDT')! - 0.0125) < 1e-12 && !pr.has('ZZZUSDT'), 'Preços via OKX: ajuste de 1000x e moedas ausentes ficam de fora');
+  assert(toOkxInstrument('BTCUSDT').factor === 1 && toOkxInstrument('1000PEPEUSDT').factor === 1000 && toOkxInstrument('1INCHUSDT').instId === '1INCH-USDT-SWAP' && toOkxInstrument('1000000MOGUSDT').factor === 1000000, 'Mapeamento de símbolos para a OKX (1INCH não é confundida com 1000x)');
+
+  // 5) todas bloqueadas: erro claro com o motivo de cada uma
+  blocked.add('okx'); resetFuturesProvider();
+  let err = '';
+  try { await futuresKlines('BTCUSDT', '1h', 2); } catch (e: any) { err = String(e?.message); }
+  assert(err.includes('HTTP 451') && err.includes('Bybit') && err.includes('OKX'), 'Todas as fontes bloqueadas: erro lista o motivo de cada corretora');
+
+  // 6) listas de símbolos
+  blocked.clear();
+  const okxSet = await futuresSymbolsFrom('okx');
+  assert(okxSet.has('BTCUSDT') && !okxSet.has('1000BTCUSDT') && okxSet.has('1000PEPEUSDT') && !okxSet.has('PEPEUSDT'), 'Lista da OKX: moedas de preço muito baixo aparecem com o nome 1000X (padrão da Binance/Bybit)');
+  assert((await futuresSymbolsFrom('binance')).has('BTCUSDT') && !(await futuresSymbolsFrom('binance')).has('BTCUSDT_250627'), 'Lista da Binance ignora contratos com vencimento');
+
+  // 7) universo de futuros com a Binance bloqueada: segue com a Bybit e avisa o que não foi verificado
+  const cgMock = [{ symbol: 'btc', name: 'Bitcoin', market_cap_rank: 1, market_cap: 1e12 }, { symbol: 'pepe', name: 'Pepe', market_cap_rank: 2, market_cap: 5e9 }];
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = ((url: any) => {
+    const u = String(url);
+    if (u.includes('coingecko')) return respond(cgMock);
+    return (origFetch as any)(url);
+  }) as typeof fetch;
+  delete process.env.CMC_API_KEY;
+  process.env.EXCHANGES = 'binance,bybit';
+  blocked.add('binance'); resetFuturesProvider();
+  const uBybit = await buildUniverse('futures');
+  assert(uBybit.coins.map((c) => c.symbol).join(',') === 'BTCUSDT,1000PEPEUSDT' && uBybit.unverified?.join(',') === 'binance', 'Universo de futuros com a Binance bloqueada usa a Bybit e marca a Binance como não verificada');
+  // Configuração padrão (só Binance exigida) com a Binance bloqueada: a Bybit serve de lista de reserva
+  delete process.env.EXCHANGES;
+  const uDefault = await buildUniverse('futures');
+  assert(uDefault.coins.map((c) => c.symbol).join(',') === 'BTCUSDT,1000PEPEUSDT' && uDefault.unverified?.join(',') === 'binance', 'Só a Binance exigida e ela bloqueada: usa a Bybit como lista de reserva');
+  process.env.EXCHANGES = 'binance,bybit';
+  blocked.add('bybit');
+  const uOkx = await buildUniverse('futures');
+  assert(uOkx.coins.some((c) => c.symbol === '1000PEPEUSDT') && !!uOkx.unverified?.includes('bybit') && !!uOkx.unverified?.includes('binance'), 'Binance e Bybit bloqueadas: universo pela OKX, ambas marcadas como não verificadas');
+  blocked.add('okx');
+  let uErr = '';
+  try { await buildUniverse('futures'); } catch (e: any) { uErr = String(e?.message); }
+  assert(uErr.includes('Binance, Bybit e OKX indisponíveis'), 'Nenhuma corretora acessível: erro claro em vez de lista vazia');
+  delete process.env.EXCHANGES;
+  globalThis.fetch = realFetchF2;
+  resetFuturesProvider();
 }
 
 console.log('\n========================================================');
