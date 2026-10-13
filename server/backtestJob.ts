@@ -10,7 +10,14 @@ import { summarizeBatch, BatchSummary } from '../src/services/backtestBatch';
 import { buildUniverse } from './universe';
 import { fetchHistory } from './history';
 
+/**
+ * Lista FIXA das grandes moedas de 2022, definida antes de ver resultados da estratégia de tendência.
+ * Reduz o viés de sobrevivência do universo atual (top 100 de hoje): inclui moedas que ficaram para trás.
+ */
+export const CLASSIC_2022 = ['BTC', 'ETH', 'BNB', 'XRP', 'ADA', 'DOGE', 'SOL', 'TRX', 'DOT', 'LTC', 'AVAX', 'LINK', 'ATOM', 'XLM', 'ETC', 'BCH', 'UNI'];
+
 export interface BatchParams {
+  list?: 'top' | 'classic2022';
   strategy: 'signals' | 'trend'; // signals: confluência de indicadores; trend: rompimento de 55 dias (diário, só spot)
   market: MarketType;
   tf: '1h' | '4h' | '1d';
@@ -43,7 +50,9 @@ export function getBatchJob(): BatchJob | null {
 export function startBatchJob(requested: BatchParams): BatchJob {
   if (current && current.status === 'running') return current;
   // A estratégia de tendência é sempre diária e só spot (compras), qualquer que seja o pedido
-  const params: BatchParams = requested.strategy === 'trend' ? { ...requested, market: 'spot', tf: '1d' } : requested;
+  const base: BatchParams = requested.strategy === 'trend' ? { ...requested, market: 'spot', tf: '1d' } : requested;
+  // Lista fixa de 2022 existe só para spot
+  const params: BatchParams = base.list === 'classic2022' ? { ...base, market: 'spot' } : base;
 
   const job: BatchJob = {
     id: ++counter, params, status: 'running', done: 0, total: 0, startedAt: Date.now(), failedSymbols: []
@@ -52,8 +61,9 @@ export function startBatchJob(requested: BatchParams): BatchJob {
 
   (async () => {
     try {
-      const universe = await buildUniverse(params.market);
-      const coins = universe.coins.slice(0, params.top);
+      const coins = params.list === 'classic2022'
+        ? CLASSIC_2022.map((b, i) => ({ rank: i + 1, baseAsset: b, name: b, symbol: `${b}USDT`, marketCap: 0 }))
+        : (await buildUniverse(params.market)).coins.slice(0, params.top);
       const trend = params.strategy === 'trend';
       // Filtro de mercado da estratégia de tendência: histórico diário do Bitcoin
       const btc = trend ? await fetchHistory('BTCUSDT', '1d', params.bars, 1, 'spot') : [];
