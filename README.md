@@ -1,65 +1,97 @@
-# CryptoRadar
+# Plano de validação: do simulado ao dinheiro real
 
-Sinais de compra e venda das 100 maiores criptomoedas (por valor de mercado) que existem na **Binance** (spot e futuros; a Bybit fica para depois), com carteira simulada e histórico das simulações.
+Objetivo: só arriscar dinheiro depois de ter números reais mostrando que a estratégia se sustenta. O app **não envia ordens**: você opera na corretora e usa o app como apoio.
 
-## Como usar
+> Isto é um roteiro de disciplina, não recomendação de investimento. Cripto pode levar a perda total, e atingir os critérios abaixo **não garante lucro futuro**.
+
+## Fase 0: preparar (1 dia)
+
+1. Rode o app num lugar que fique **ligado 24h** (um servidor ou VPS). O scanner só gera e acompanha sinais enquanto o servidor está no ar; se ele ficar desligado, você perde sinais e o resultado fica enviesado.
+2. Configure `TELEGRAM_BOT_TOKEN` e `TELEGRAM_CHAT_ID` para receber cada sinal na hora.
+3. Confirme que a pasta `data/` do servidor **não é apagada** a cada reinício (é lá que o histórico de sinais fica).
+
+## Fase 1: backtest (1 dia)
 
 ```bash
-npm install
-cp .env.example .env     # opcional: só precisa editar se quiser alertas no Telegram
-npm run dev              # abre em http://localhost:3000
+npm run backtest -- --tf 1h --top 30 --bars 3000
+npm run backtest -- --tf 4h --top 30 --bars 3000
 ```
 
-Sem configurar nada o app já funciona: o scanner busca o ranking no CoinGecko, cruza com as duas corretoras e gera sinais a cada 5 minutos.
+Passa se, no **agregado** (e nos dois timeframes):
 
-Para produção: `npm run build` e depois `NODE_ENV=production npm start`.
-
-## Telas
-
-- **Sinais**: compras e vendas com entrada, alvo e stop. Toque em **Simular** para abrir a operação na carteira simulada já com tamanho calculado pelo risco.
-- **Carteira**: patrimônio, posições abertas e histórico de todas as simulações (exportável em CSV). “Zerar saldo” mantém o histórico.
-- **Mercado**: as moedas do scanner em ordem de valor de mercado, com gráfico.
-- **Ajustes** (engrenagem): risco por operação, intervalo de atualização, Telegram e estado do scanner.
-
-## Como o sinal é gerado
-
-Pontuação de −100 a +100 combinando tendência (EMA 20/50), MACD, RSI, volume e cruzamentos recentes, sempre em candles **fechados**. Só emite sinal com pontuação de 60 ou mais e tendência definida. Stop e alvo vêm do ATR (risco:retorno 1:2).
-
-O app tem dois modos, escolhidos no seletor **Spot | Futuros** (cada um com seus sinais, sua carteira simulada e seu histórico):
-
-- **Spot**: só compras. “Vender (sair)” significa sair de uma posição que você já tem.
-- **Futuros** (perpétuos USDT-M): sinais de **Long** e **Short**, com alavancagem, margem isolada, preço de liquidação e alavancagem segura para cada stop. O universo é o top 100 ∩ perpétuos da Binance (moedas como PEPE aparecem como `1000PEPE`).
-
-## Variáveis (.env)
-
-| Variável | Para quê |
+| Critério | Mínimo |
 | --- | --- |
-| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Alertas automáticos de cada sinal novo |
-| `CMC_API_KEY` | Usar CoinMarketCap em vez do CoinGecko para o ranking |
-| `EXCHANGES` | `binance` (padrão). `binance,bybit` exige o par nas duas corretoras (Bybit ainda não é suportada de ponta a ponta) |
-| `FUTURES_ENABLED` | `true` (padrão). Use `false` para desligar o scanner de futuros |
-| `SCAN_INTERVAL_MINUTES` | Intervalo da varredura (padrão 5) |
+| Operações | 100 ou mais |
+| Fator de lucro | 1,3 ou mais |
+| Expectativa por operação | positiva depois dos custos |
+| Drawdown máximo | que você aguentaria ver na vida real |
 
-## Backtest
+Se reprovar, **pare e ajuste a estratégia** antes de avançar. Cuidado ao ajustar: não mexa nos parâmetros até o histórico "dar certo", isso só decora o passado. Ajuste e confirme em um período diferente.
 
-No app: **Ajustes → Abrir backtest**. Escolha mercado, tempo de vela e quantidade de moedas; o servidor roda em segundo plano e mostra o veredito contra os critérios (100+ operações, fator de lucro 1,3+, média positiva e as duas metades do período com fator 1,0+). Também por linha de comando:
+### Resultado do primeiro backtest (estratégia de sinais por indicadores)
 
-```bash
-npm run backtest -- --tf 1h --top 30 --bars 2000                 # spot (só compras)
-npm run backtest -- --tf 1h --top 30 --bars 2000 --market futures  # futuros (long e short, com funding)
-```
+Spot, 30 moedas em 1h (470 operações): fator de lucro 0,87. Spot, 50 moedas em 4h (633 operações): fator de lucro 0,76, com as duas metades do período perdendo. A taxa de acerto (32% a 34%) ficou abaixo do ponto de empate do alvo de 2 para 1, ou seja, os sinais não tinham vantagem sobre o acaso. Conclusão: não seguir para a simulação ao vivo com essa estratégia nem ajustar parâmetros em cima dela.
 
-Roda o motor no histórico real com taxa e derrapagem. Resultado passado não garante resultado futuro.
+### Estratégia alternativa: rompimento de 55 dias (tendência)
 
-## Antes de usar dinheiro real
+Testada no app (Backtest → "Rompimento de 55 dias") ou por `npm run backtest -- --strategy trend --top 50 --bars 1500`. As regras foram **fixadas antes de ver o resultado** e não devem ser ajustadas depois para "passar": entrada no rompimento da máxima de 55 dias com o Bitcoin acima da média de 200 dias, stop de 2 ATR, saída quando perde a mínima de 20 dias, sem alvo fixo, velas diárias, só compras. Os mesmos critérios valem (100+ operações, fator 1,3+, média positiva e as duas metades do período com fator 1,0+). Se reprovar, a conclusão é abandonar a ideia, não variar números.
 
-Leia o [plano de validação](docs/PLANO-DE-VALIDACAO.md). Em Sinais → *Desempenho dos sinais* há um semáforo que mostra, com base nos seus sinais reais, se os critérios mínimos já foram atingidos. O app não envia ordens: você opera na corretora e, em Ajustes → *Capital real*, informa seu capital para ver o tamanho sugerido em cada sinal de compra.
+## Fase 2: simulação ao vivo, 4 semanas (mínimo)
 
-## Testes
+Regras para a simulação valer:
 
-```bash
-npm test
-npm run lint
-```
+- Simule **todo sinal de compra**, não só os que "parecem bons". Escolher a dedo invalida o teste.
+- Use o tamanho sugerido pelo risco (aba Carteira → Simular).
+- Não mude parâmetros no meio do teste.
 
-> Sinais técnicos automáticos não são recomendação de investimento. O app não envia ordens reais: toda operação é simulada.
+Acompanhe em **Sinais → Desempenho dos sinais → "Pronto para valor real?"**. O semáforo exige:
+
+- 30 sinais encerrados ou mais
+- 28 dias ou mais de acompanhamento
+- resultado médio acima de +0,10R por sinal (já com taxas e derrapagem)
+- fator de lucro de 1,3 ou mais
+- resultado ainda positivo sem os 3 melhores sinais
+
+Se terminar o período e **não passar**, a conclusão é: não operar com dinheiro real com esta estratégia.
+
+## Fase 3: dinheiro real, começando pequeno
+
+Só se o semáforo ficar verde.
+
+1. Em **Ajustes → Capital real**, informe o valor e um risco de **0,5% a 1%** por operação. Cada sinal de compra passa a mostrar quanto comprar.
+2. Use um capital que você aceite **perder por inteiro**.
+3. **Sempre coloque o stop na corretora** (ordem stop-limit ou OCO) no momento da compra. Não dependa do app aberto nem de ficar olhando a tela.
+4. Antes de comprar, confira o preço **na corretora**: o do app pode estar um pouco defasado.
+5. Limites para proteger o capital:
+   - no máximo 3 posições abertas ao mesmo tempo;
+   - se perder 3% do capital no dia, pare até o dia seguinte;
+   - se perder 6% na semana, pare até a semana seguinte;
+   - 8 stops seguidos ou 10% de perda do capital de teste: **pause e revise tudo**.
+6. Registre as operações reais (data, preço de entrada e saída, taxas) e compare com a simulação. Se o real for sistematicamente pior (taxas, derrapagem, atraso), revise os custos.
+
+## Futuros: validação separada e mais exigente
+
+Futuros **não herdam** a validação do spot: têm short, alavancagem e liquidação. Cada modo tem seu próprio semáforo (o do modo Futuros só conta sinais de futuros). Siga as mesmas fases, com estas diferenças:
+
+- **Backtest:** `npm run backtest -- --tf 1h --top 30 --bars 3000 --market futures` (inclui long, short e um funding conservador de 0,01% por 8h).
+- **Alavancagem:** comece com **2x ou 3x**. O app mostra a "alavancagem segura" de cada sinal (a liquidação fica pelo menos o dobro da distância do stop). Nunca passe dela.
+- **O stop tem de vir antes da liquidação.** O simulador recusa a ordem se não vier. Na corretora, use **margem isolada** e coloque o stop na hora da abertura.
+- **Limites mais curtos:** pare por 1 dia se perder 2% do capital no dia e por 1 semana se perder 5% na semana.
+- **Quanto você arrisca vem do stop, não da alavancagem.** Alavancagem maior só deixa a liquidação mais perto: o stop pode nem ser executado em um movimento brusco (gap, pavio).
+
+O que a simulação de futuros **não** captura (o real tende a ser pior):
+
+- o stop é "executado" exatamente no preço do stop, sem derrapagem;
+- o preço é checado só a cada atualização (30 s por padrão), então um pavio rápido que tocaria stop ou liquidação pode passar despercebido;
+- não há funding nas posições simuladas (só no backtest);
+- a liquidação é uma aproximação (0,5% de manutenção): a da corretora pode ser diferente, principalmente em posições grandes.
+
+Operar futuros com dinheiro real só depois de o semáforo **de futuros** ficar verde, com a mesma regra: valor pequeno, que você aceite perder por inteiro.
+
+## Spot: como ler "Vender"
+
+Em spot, "Vender (sair)" só vale se você **já tem** a moeda. Não é para abrir operação. Para operar vendido, use o modo Futuros (seção acima), que tem validação própria.
+
+## Quando reavaliar
+
+Refaça o ciclo (backtest + simulação) sempre que mudar a estratégia ou os parâmetros. Resultado antigo não vale para regra nova.

@@ -6,7 +6,7 @@ import { pnlColor } from '../common/format';
 
 interface Job {
   id: number;
-  params: { market: MarketType; tf: '1h' | '4h'; top: number; bars: number };
+  params: { strategy?: 'signals' | 'trend'; market: MarketType; tf: '1h' | '4h' | '1d'; top: number; bars: number };
   status: 'running' | 'done' | 'error';
   done: number;
   total: number;
@@ -48,6 +48,7 @@ const HalfRow: React.FC<{ label: string; s: BacktestStats }> = ({ label, s }) =>
 );
 
 export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
+  const [strategy, setStrategy] = useState<'signals' | 'trend'>('signals');
   const [market, setMarket] = useState<MarketType>('spot');
   const [tf, setTf] = useState<'1h' | '4h'>('1h');
   const [top, setTop] = useState(30);
@@ -86,7 +87,7 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
       const r = await fetch('/api/backtest/batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ market, tf, top, bars: 3000 })
+        body: JSON.stringify({ strategy, market, tf, top, bars: strategy === 'trend' ? 1500 : 3000 })
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j?.error || `Erro ${r.status}`);
@@ -97,6 +98,7 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     }
   };
 
+  const trend = strategy === 'trend';
   const running = job?.status === 'running';
   const sum = job?.status === 'done' ? job.summary : undefined;
   const a = sum?.aggregate;
@@ -110,18 +112,32 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 
       <p className="text-sm text-slate-400 leading-relaxed">
         Aplica a estratégia ao histórico real das maiores moedas, já com taxas e derrapagem
-        {market === 'futures' ? ' e funding' : ''}. Leva alguns minutos.
+        {!trend && market === 'futures' ? ' e funding' : ''}. Leva alguns minutos.
       </p>
 
       <section className={`${card} space-y-3`}>
         <div>
-          <div className="text-sm text-slate-400 mb-1.5">Mercado</div>
-          <Seg value={market} onChange={(v) => setMarket(v as MarketType)} options={[['spot', 'Spot (só compras)'], ['futures', 'Futuros (long e short)']]} />
+          <div className="text-sm text-slate-400 mb-1.5">Estratégia</div>
+          <Seg value={strategy} onChange={(v) => setStrategy(v as 'signals' | 'trend')} options={[['signals', 'Sinais por indicadores'], ['trend', 'Rompimento de 55 dias']]} />
+          {trend && (
+            <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+              Velas diárias, só compras. Entra quando o fechamento passa da máxima dos 55 dias anteriores e o Bitcoin está acima da média de 200 dias.
+              Stop de 2 ATR; sai quando o fechamento perde a mínima dos 20 dias. Sem alvo fixo. Regras fixas, sem ajuste.
+            </p>
+          )}
         </div>
-        <div>
-          <div className="text-sm text-slate-400 mb-1.5">Tempo de cada vela</div>
-          <Seg value={tf} onChange={(v) => setTf(v as '1h' | '4h')} options={[['1h', '1 hora'], ['4h', '4 horas']]} />
-        </div>
+        {!trend && (
+          <>
+            <div>
+              <div className="text-sm text-slate-400 mb-1.5">Mercado</div>
+              <Seg value={market} onChange={(v) => setMarket(v as MarketType)} options={[['spot', 'Spot (só compras)'], ['futures', 'Futuros (long e short)']]} />
+            </div>
+            <div>
+              <div className="text-sm text-slate-400 mb-1.5">Tempo de cada vela</div>
+              <Seg value={tf as '1h' | '4h'} onChange={(v) => setTf(v as '1h' | '4h')} options={[['1h', '1 hora'], ['4h', '4 horas']]} />
+            </div>
+          </>
+        )}
         <div>
           <div className="text-sm text-slate-400 mb-1.5">Moedas testadas</div>
           <Seg value={String(top)} onChange={(v) => setTop(Number(v))} options={[['10', '10'], ['30', '30'], ['50', '50']]} />
@@ -135,7 +151,7 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
       {running && job && (
         <section className={card}>
           <div className="flex justify-between text-sm text-slate-300 mb-2">
-            <span>{job.params.market === 'futures' ? 'Futuros' : 'Spot'} · {job.params.tf}</span>
+            <span>{job.params.strategy === 'trend' ? 'Rompimento de 55 dias' : `${job.params.market === 'futures' ? 'Futuros' : 'Spot'} · ${job.params.tf}`}</span>
             <span className="tabular-nums">{job.done} de {job.total || job.params.top} moedas</span>
           </div>
           <div className="h-2 rounded-full bg-[#0f1115] overflow-hidden">
@@ -153,7 +169,7 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
       {sum && a && job && (
         <>
           <p className="text-xs text-slate-500">
-            Resultado de {job.params.market === 'futures' ? 'Futuros' : 'Spot'} · {job.params.tf} · {job.params.top} moedas
+            Resultado de {job.params.strategy === 'trend' ? 'Rompimento de 55 dias (spot, diário)' : `${job.params.market === 'futures' ? 'Futuros' : 'Spot'} · ${job.params.tf}`} · {job.params.top} moedas
           </p>
 
           <section className={card}>
@@ -184,16 +200,19 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
               <Stat label="Acerto" value={`${a.winRate.toFixed(0)}%`} />
               <Stat label="Fator de lucro" value={pf(a.profitFactor)} color={a.profitFactor === null || a.profitFactor >= BACKTEST_CRITERIA.minProfitFactor ? 'text-emerald-400' : 'text-rose-400'} />
               <Stat label="Média por operação" value={pct(a.avgNetPct)} color={pnlColor(a.avgNetPct)} />
-              <Stat label="Soma dos resultados" value={pct(a.totalNetPct)} color={pnlColor(a.totalNetPct)} />
-              <Stat label="Maior queda" value={`${a.maxDrawdownPct.toFixed(1)}%`} />
+              <Stat label="Capital com 1% de risco" value={pct(sum.risk1.returnPct)} color={pnlColor(sum.risk1.returnPct)} />
+              <Stat label="Maior queda do capital" value={`${sum.risk1.maxDrawdownPct.toFixed(1)}%`} />
             </div>
             <div className="mt-3">
               <HalfRow label="Primeira metade do período" s={sum.firstHalf} />
               <HalfRow label="Segunda metade do período" s={sum.secondHalf} />
             </div>
             <p className="text-xs text-slate-500 mt-3">
-              Saídas: alvo {a.targetExits} · stop {a.stopExits} · tempo {a.timeoutExits}
+              Saídas: {job.params.strategy === 'trend' ? `tendência ${a.trailExits}` : `alvo ${a.targetExits}`} · stop {a.stopExits} · tempo {a.timeoutExits}
               {job.failedSymbols.length > 0 && ` · não testadas: ${job.failedSymbols.length}`}
+            </p>
+            <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+              Capital e queda: simulação arriscando 1% por operação, com ganhos e perdas compostos, na ordem do tempo. Operações simultâneas contam todas, então a queda real pode diferir.
             </p>
           </section>
 

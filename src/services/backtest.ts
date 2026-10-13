@@ -32,7 +32,7 @@ export const DEFAULT_BACKTEST_OPTIONS: BacktestOptions = {
 
 const BAR_HOURS: Record<string, number> = { '15m': 0.25, '1h': 1, '4h': 4, '1d': 24, '1D': 24, '1w': 168, '1W': 168 };
 
-export type TradeExit = 'TARGET' | 'STOP' | 'TIMEOUT';
+export type TradeExit = 'TARGET' | 'STOP' | 'TIMEOUT' | 'TRAIL';
 
 export interface BacktestTrade {
   symbol: string;
@@ -40,6 +40,7 @@ export interface BacktestTrade {
   direction: SignalDirection;
   score: number;
   entryIndex: number;
+  entryTimestamp?: number; // ms; permite ordenar operações de várias moedas no tempo
   exitIndex: number;
   entryPrice: number;
   exitPrice: number;
@@ -62,6 +63,7 @@ export interface BacktestStats {
   targetExits: number;
   stopExits: number;
   timeoutExits: number;
+  trailExits: number;     // saída pela tendência (estratégia de rompimento)
   longTrades: number;
   shortTrades: number;
 }
@@ -104,6 +106,7 @@ export function computeStats(trades: BacktestTrade[]): BacktestStats {
     targetExits: trades.filter((t) => t.exit === 'TARGET').length,
     stopExits: trades.filter((t) => t.exit === 'STOP').length,
     timeoutExits: trades.filter((t) => t.exit === 'TIMEOUT').length,
+    trailExits: trades.filter((t) => t.exit === 'TRAIL').length,
     longTrades: trades.filter((t) => t.direction === 'LONG').length,
     shortTrades: trades.filter((t) => t.direction === 'SHORT').length
   };
@@ -162,7 +165,7 @@ export function runBacktest(
 
     trades.push({
       symbol, timeframe, direction: sig.direction, score: sig.score,
-      entryIndex: i + 1, exitIndex: exitIdx, entryPrice: entry, exitPrice, exit,
+      entryIndex: i + 1, entryTimestamp: entryBar.timestamp, exitIndex: exitIdx, entryPrice: entry, exitPrice, exit,
       grossPct, netPct, rMultiple: riskPct > 0 ? netPct / riskPct : 0
     });
 

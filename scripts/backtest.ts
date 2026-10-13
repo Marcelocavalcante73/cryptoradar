@@ -1,29 +1,32 @@
 /**
- * Uso: npm run backtest -- [--tf 1h] [--top 30] [--bars 2000] [--symbols BTCUSDT,ETHUSDT] [--min-score 60] [--market spot|futures] [--both]
+ * Uso: npm run backtest -- [--tf 1h] [--top 30] [--bars 2000] [--symbols BTCUSDT,ETHUSDT] [--min-score 60] [--market spot|futures] [--both] [--strategy signals|trend]
  * Roda o motor de sinais sobre o histórico real da Binance e imprime o resultado por moeda e agregado.
  */
 import { buildUniverse } from '../server/universe';
 import { fetchHistory } from '../server/history';
 import { runBacktest, computeStats, BacktestTrade } from '../src/services/backtest';
+import { runTrendBacktest } from '../src/services/trendBacktest';
 
 function arg(name: string, def: string): string {
   const i = process.argv.indexOf(`--${name}`);
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : def;
 }
 
-const tf = arg('tf', '1h');
+const trend = arg('strategy', 'signals') === 'trend'; // rompimento de 55 dias (diário, só spot)
+const tf = trend ? '1d' : arg('tf', '1h');
 const top = Number(arg('top', '30'));
 const bars = Number(arg('bars', '2000'));
 const minScore = Number(arg('min-score', '0')) || undefined;
 const symbolsArg = arg('symbols', '');
 // Spot é o padrão: só compras. Use --both para incluir vendas a descoberto (futuros).
-const market = arg('market', 'spot') === 'futures' ? 'futures' : 'spot';
+const market = !trend && arg('market', 'spot') === 'futures' ? 'futures' : 'spot';
 const longOnly = market === 'spot' && !process.argv.includes('--both');
 const fundingPer8h = market === 'futures' ? 0.0001 : 0; // futuros: funding conservador de 0,01% por 8h, pago nos dois lados
 
 const pct = (n: number) => `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
 
 async function main() {
+  const btc = trend ? await fetchHistory('BTCUSDT', '1d', bars, 1, 'spot') : [];
   let targets: { symbol: string; base: string }[];
   if (symbolsArg) {
     targets = symbolsArg.split(',').map((s) => ({ symbol: s.trim().toUpperCase(), base: s.trim().toUpperCase().replace(/USDT$/, '') }));
@@ -32,14 +35,14 @@ async function main() {
     targets = u.coins.slice(0, top).map((c) => ({ symbol: c.symbol, base: c.baseAsset }));
   }
 
-  console.log(`Backtest ${market === 'futures' ? 'FUTUROS (compras e vendas, com funding)' : longOnly ? 'SPOT (só compras)' : 'SPOT (compras e vendas)'} | timeframe ${tf} | ${targets.length} moedas | até ${bars} candles | taxa 0,1% + derrapagem 0,05% por lado${market === 'futures' ? ' + funding 0,01%/8h' : ''}\n`);
+  console.log(`Backtest ${trend ? 'ROMPIMENTO DE 55 DIAS (spot, diário)' : market === 'futures' ? 'FUTUROS (compras e vendas, com funding)' : longOnly ? 'SPOT (só compras)' : 'SPOT (compras e vendas)'} | timeframe ${tf} | ${targets.length} moedas | até ${bars} candles | taxa 0,1% + derrapagem 0,05% por lado${market === 'futures' ? ' + funding 0,01%/8h' : ''}\n`);
   console.log('Moeda        Op.  Acerto   Média/op   R médio  Fator lucro  Máx.DD');
 
   const all: BacktestTrade[] = [];
   for (const t of targets) {
     try {
       const candles = await fetchHistory(t.symbol, tf, bars, 1, market);
-      const r = runBacktest(candles, t.symbol, t.base, tf, { minScore, longOnly, fundingPer8h });
+      const r = trend ? runTrendBacktest(candles, btc, t.symbol) : runBacktest(candles, t.symbol, t.base, tf, { minScore, longOnly, fundingPer8h });
       all.push(...r.trades);
       const s = r.stats;
       console.log(

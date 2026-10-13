@@ -55,7 +55,8 @@ import { suggestAmount } from '../components/paperTrading/TradeSheet';
 import { historyToCsv } from '../components/paperTrading/WalletView';
 import { liquidationPrice, stopBeforeLiquidation, maxSafeLeverage, futuresSizing } from '../services/futures';
 import { positionUnrealizedPnl } from '../services/paperTradingService';
-import { summarizeBatch } from '../services/backtestBatch';
+import { summarizeBatch, riskCurve } from '../services/backtestBatch';
+import { runTrendBacktest, btcRegimeByDay, TREND_RULES } from '../services/trendBacktest';
 import { startBatchJob, getBatchJob } from '../../server/backtestJob';
 import { evaluateSignal, scoreCandles, MIN_SCORE } from '../services/signalEngine';
 import { StorageService, INITIAL_PAPER_ACCOUNT } from '../services/storageService';
@@ -1144,15 +1145,105 @@ console.log('\n--- Backtest em lote ---');
     return Promise.reject(new Error('url inesperada: ' + u));
   }) as typeof fetch;
   resetTop100Cache();
-  const job = startBatchJob({ market: 'spot', tf: '1h', top: 5, bars: 1000 });
+  const job = startBatchJob({ strategy: 'signals', market: 'spot', tf: '1h', top: 5, bars: 1000 });
   assert(job.status === 'running', 'Backtest em lote começa em segundo plano');
-  assert(startBatchJob({ market: 'futures', tf: '4h', top: 5, bars: 1000 }).id === job.id, 'Enquanto um backtest roda, outro pedido devolve o mesmo trabalho (um por vez)');
+  assert(startBatchJob({ strategy: 'signals', market: 'futures', tf: '4h', top: 5, bars: 1000 }).id === job.id, 'Enquanto um backtest roda, outro pedido devolve o mesmo trabalho (um por vez)');
   for (let i = 0; i < 400 && getBatchJob()?.status === 'running'; i++) await new Promise((r) => setTimeout(r, 50));
   const done = getBatchJob()!;
   assert(done.status === 'done' && done.done === 5 && done.total === 5, 'Trabalho termina com as 5 moedas testadas', `${done.status} ${done.done}/${done.total} ${done.error ?? ''}`);
   assert(done.summary!.rows.length === 5 && done.summary!.checks.length === 5, 'Resultado traz tabela por moeda e os 5 critérios');
   assert(done.summary!.aggregate.shortTrades === 0, 'Spot no lote: nenhuma operação vendida');
   globalThis.fetch = realFetchJ;
+}
+
+// ============================================================================
+// ESTRATÉGIA DE TENDÊNCIA (ROMPIMENTO DE 55 DIAS) E CURVA DE CAPITAL
+// ============================================================================
+console.log('\n--- Tendência: rompimento de 55 dias ---');
+{
+  const DAY = 86400000;
+  const T0 = 1_600_000_000_000;
+  const days = (closes: number[], opens?: number[]): CandleData[] => closes.map((c, i) => {
+    const o = opens ? opens[i] : i === 0 ? c : closes[i - 1];
+    return { time: String(i), timestamp: T0 + i * DAY, open: o, high: Math.max(o, c) * 1.01, low: Math.min(o, c) * 0.99, close: c, volume: 1000 };
+  });
+  // 260 dias laterais em ~100 e depois alta forte de 1,2% ao dia por 60 dias, seguida de queda
+  const flat = Array.from({ length: 260 }, (_, i) => 100 + Math.sin(i / 4));
+  const rise = Array.from({ length: 60 }, (_, i) => 100 * Math.pow(1.012, i + 1));
+  const fall = Array.from({ length: 40 }, (_, i) => rise[rise.length - 1] * Math.pow(0.985, i + 1));
+  const coin = days([...flat, ...rise, ...fall]);
+  const btcUp = days([...flat, ...rise, ...fall]);                       // BTC acima da média de 200 dias na alta
+  const btcDown = days(Array.from({ length: 360 }, (_, i) => 200 * Math.pow(0.996, i))); // BTC em queda constante
+
+  const reg = btcRegimeByDay(btcUp);
+  assert(reg.size === 360 - (TREND_RULES.btcSmaPeriod - 1), 'Filtro do BTC só existe depois de 200 dias de histórico');
+  assert([...btcRegimeByDay(btcDown).values()].every((v) => v === false), 'BTC em queda constante: filtro sempre desligado');
+
+  const ok = runTrendBacktest(coin, btcUp, 'AAAUSDT');
+  assert(ok.trades.length >= 1, 'Alta forte com BTC em alta gera ao menos uma operação', String(ok.trades.length));
+  const tr = ok.trades[0];
+  assert(tr.entryPrice === coin[tr.entryIndex].open, 'Entrada na ABERTURA do dia seguinte ao rompimento (sem olhar o futuro)');
+  assert(coin[tr.entryIndex - 1].close > Math.max(...coin.slice(tr.entryIndex - 1 - TREND_RULES.entryLookback, tr.entryIndex - 1).map((c) => c.high)), 'O dia do sinal fechou acima da máxima dos 55 dias anteriores');
+  assert(tr.exit === 'TRAIL' && tr.netPct > 0, 'Queda depois da alta: sai pela tendência (mínima de 20 dias) com lucro', `${tr.exit} ${tr.netPct.toFixed(1)}%`);
+  assert(ok.trades.every((t, k) => k === 0 || t.entryIndex > ok.trades[k - 1].exitIndex), 'Operações não se sobrepõem');
+  assert(ok.trades.every((t) => Math.abs(t.grossPct - t.netPct - 0.3) < 1e-9), 'Custos de 0,3% descontados em cada operação');
+  assert(runTrendBacktest(coin, btcDown, 'AAAUSDT').trades.length === 0, 'Com o BTC em queda (filtro desligado) não há nenhuma entrada');
+
+  // Stop: logo após o rompimento o preço despenca abaixo de entrada − 2×ATR
+  const crashCloses = [...flat, ...rise.slice(0, 20)];
+  const entryDay = crashCloses.length;
+  const crashSeries = days([...crashCloses, 70, 65, 60]);
+  const crash = runTrendBacktest(crashSeries, days([...flat, ...rise.slice(0, 20), 150, 150, 150]), 'BBBUSDT');
+  const ct = crash.trades[0];
+  assert(!!ct && ct.exit === 'STOP' && ct.netPct < 0 && ct.exitPrice <= ct.entryPrice, 'Queda brusca após a entrada: sai no stop com prejuízo');
+  void entryDay;
+
+  // Dados terminam com a posição aberta: encerra no último fechamento e marca TIMEOUT
+  const endOpen = runTrendBacktest(days([...flat, ...rise.slice(0, 15)]), days([...flat, ...rise.slice(0, 15)]), 'CCCUSDT');
+  assert(endOpen.trades.length === 0 || endOpen.trades[endOpen.trades.length - 1].exit === 'TIMEOUT', 'Posição aberta no fim dos dados é encerrada como TIMEOUT');
+  assert(runTrendBacktest(days(flat.slice(0, 40)), days(flat.slice(0, 40)), 'DDDUSDT').trades.length === 0, 'Histórico curto não gera operação');
+
+  // Curva de capital: risco fixo de 1% e juros compostos, em ordem de tempo
+  const mkT = (r: number, ts: number): BacktestTrade => ({ symbol: 'X', timeframe: '1d', direction: 'LONG', score: 0, entryIndex: ts, entryTimestamp: ts, exitIndex: ts + 1, entryPrice: 1, exitPrice: 1, exit: 'TRAIL', grossPct: r, netPct: r, rMultiple: r });
+  const curve = riskCurve([mkT(-1, 1), mkT(-1, 2), mkT(3, 3)]);
+  assert(Math.abs(curve.maxDrawdownPct - (1 - 0.99 * 0.99) * 100) < 1e-9, 'Queda máxima = duas perdas de 1% compostas (1,99%)', curve.maxDrawdownPct.toFixed(3));
+  assert(Math.abs(curve.returnPct - (0.99 * 0.99 * 1.03 - 1) * 100) < 1e-9, 'Retorno composto: 0,99 × 0,99 × 1,03');
+  assert(Math.abs(riskCurve([mkT(3, 5), mkT(-1, 1)]).maxDrawdownPct - 1) < 1e-9, 'Ordena as operações pelo tempo antes de compor');
+  assert(riskCurve([]).returnPct === 0, 'Curva vazia não quebra');
+}
+
+// Trabalho em lote com a estratégia de tendência (spot, diário), com corretoras simuladas
+{
+  const realFetchT = globalThis.fetch;
+  const jsonT = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  const coinsT = ['AAA', 'BBB', 'CCC'];
+  let intervalsAsked = new Set<string>();
+  globalThis.fetch = ((url: any) => {
+    const u = String(url);
+    if (u.includes('coingecko')) return jsonT(coinsT.map((c, i) => ({ symbol: c.toLowerCase(), name: c, market_cap_rank: i + 1, market_cap: 1e9 })));
+    if (u.includes('/api/v3/ticker/price')) return jsonT([...coinsT, 'BTC'].map((c) => ({ symbol: `${c}USDT`, price: '100' })));
+    if (u.includes('bybit.com')) return jsonT({ retCode: 0, result: { list: coinsT.map((c) => ({ symbol: `${c}USDT` })) } });
+    if (u.includes('/api/v3/klines')) {
+      const q = new URL(u).searchParams;
+      intervalsAsked.add(q.get('interval') || '');
+      const limit = Number(q.get('limit') || 500);
+      let p = 100;
+      return jsonT(Array.from({ length: limit }, (_, i) => {
+        const o = p; p *= 1 + 0.003 + Math.sin(i / 11) * 0.02;
+        return [1_600_000_000_000 + i * 86_400_000, String(o), String(Math.max(o, p) * 1.01), String(Math.min(o, p) * 0.99), String(p), '1000', 0, '0', 0, '0', '0', '0'];
+      }));
+    }
+    return Promise.reject(new Error('url inesperada: ' + u));
+  }) as typeof fetch;
+  resetTop100Cache();
+  startBatchJob({ strategy: 'trend', market: 'futures', tf: '1h', top: 3, bars: 800 });
+  for (let i = 0; i < 400 && getBatchJob()?.status === 'running'; i++) await new Promise((r) => setTimeout(r, 50));
+  const tj = getBatchJob()!;
+  assert(tj.status === 'done' && tj.done === 3, 'Trabalho de tendência termina', `${tj.status} ${tj.error ?? ''}`);
+  assert(tj.params.market === 'spot' && tj.params.tf === '1d', 'Tendência força spot e velas diárias, mesmo se pedirem futuros/1h');
+  assert([...intervalsAsked].every((i) => i === '1d'), 'Tendência sempre usa velas diárias, mesmo se pedirem outro tempo', [...intervalsAsked].join(','));
+  assert(tj.summary!.rows.length === 3 && tj.summary!.risk1 !== undefined, 'Resultado traz tabela e curva de capital');
+  globalThis.fetch = realFetchT;
 }
 
 console.log('\n========================================================');

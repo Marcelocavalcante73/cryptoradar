@@ -28,6 +28,14 @@ Passa se, no **agregado** (e nos dois timeframes):
 
 Se reprovar, **pare e ajuste a estratégia** antes de avançar. Cuidado ao ajustar: não mexa nos parâmetros até o histórico "dar certo", isso só decora o passado. Ajuste e confirme em um período diferente.
 
+### Resultado do primeiro backtest (estratégia de sinais por indicadores)
+
+Spot, 30 moedas em 1h (470 operações): fator de lucro 0,87. Spot, 50 moedas em 4h (633 operações): fator de lucro 0,76, com as duas metades do período perdendo. A taxa de acerto (32% a 34%) ficou abaixo do ponto de empate do alvo de 2 para 1, ou seja, os sinais não tinham vantagem sobre o acaso. Conclusão: não seguir para a simulação ao vivo com essa estratégia nem ajustar parâmetros em cima dela.
+
+### Estratégia alternativa: rompimento de 55 dias (tendência)
+
+Testada no app (Backtest → "Rompimento de 55 dias") ou por `npm run backtest -- --strategy trend --top 50 --bars 1500`. As regras foram **fixadas antes de ver o resultado** e não devem ser ajustadas depois para "passar": entrada no rompimento da máxima de 55 dias com o Bitcoin acima da média de 200 dias, stop de 2 ATR, saída quando perde a mínima de 20 dias, sem alvo fixo, velas diárias, só compras. Os mesmos critérios valem (100+ operações, fator 1,3+, média positiva e as duas metades do período com fator 1,0+). Se reprovar, a conclusão é abandonar a ideia, não variar números.
+
 ## Fase 2: simulação ao vivo, 4 semanas (mínimo)
 
 Regras para a simulação valer:
