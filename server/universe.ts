@@ -9,7 +9,10 @@ import path from 'path';
 import { MarketType } from '../src/types/crypto';
 
 export const STABLECOINS = new Set([
-  'USDT', 'USDC', 'DAI', 'FDUSD', 'TUSD', 'USDE', 'USDS', 'PYUSD', 'BUSD', 'USDD', 'USD1', 'USDG', 'RLUSD'
+  'USDT', 'USDC', 'DAI', 'FDUSD', 'TUSD', 'USDE', 'USDS', 'PYUSD', 'BUSD', 'USDD', 'USD1', 'USDG', 'RLUSD',
+  'BFUSD', 'USDY', 'USDF', 'USDGO', 'USTB', 'OUSD', 'GHO', 'U',
+  // Ouro tokenizado e versões "embrulhadas" de outras moedas: não se comportam como cripto independente
+  'PAXG', 'XAUT', 'WBTC', 'WETH', 'STETH', 'WSTETH', 'WEETH', 'CBBTC', 'BTCB', 'WBETH'
 ]);
 
 export interface UniverseCoin {

@@ -291,10 +291,12 @@ app.post('/api/backtest/batch', (req: Request, res: Response) => {
   const ip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1';
   if (isRateLimited(ip)) return res.status(429).json({ error: 'Limite de requisições excedido.' });
   const b = req.body || {};
-  const tf = b.tf === '4h' ? '4h' : '1h';
+  const trend = b.strategy === 'trend';
+  const tf = trend ? '1d' : b.tf === '4h' ? '4h' : '1h';
   const top = Math.min(50, Math.max(5, Math.round(Number(b.top) || 30)));
-  const bars = Math.min(4000, Math.max(500, Math.round(Number(b.bars) || 3000)));
-  const job = startBatchJob({ market: parseMarket(b.market), tf, top, bars });
+  const bars = Math.min(trend ? 2000 : 4000, Math.max(500, Math.round(Number(b.bars) || (trend ? 1500 : 3000))));
+  // A estratégia de tendência é só para spot (compras)
+  const job = startBatchJob({ strategy: trend ? 'trend' : 'signals', market: trend ? 'spot' : parseMarket(b.market), tf, top, bars });
   res.status(202).json(job);
 });
 
