@@ -11,6 +11,7 @@ import { evaluateSignal, EngineSignal } from '../src/services/signalEngine';
 import { maxSafeLeverage } from '../src/services/futures';
 import { parseBinanceKline, priceDecimals } from '../src/services/apiService';
 import { binanceGet, buildUniverse, Universe } from './universe';
+import { futuresKlines, futuresPrices, getFuturesProvider } from './futuresData';
 
 const TIMEFRAMES = ['1h', '4h'] as const;
 const EXPIRE_AFTER_MS: Record<string, number> = { '1h': 48 * 3600e3, '4h': 8 * 24 * 3600e3 };
@@ -35,7 +36,8 @@ export interface ScanState {
   lastError: string | null;
   scannedPairs: number;
   failedPairs: number;
-  universe: Pick<Universe, 'source' | 'fetchedAt' | 'skipped' | 'exchanges'> & {
+  dataSource?: string; // futuros: de qual corretora vieram os dados (binance, bybit, okx)
+  universe: Pick<Universe, 'source' | 'fetchedAt' | 'skipped' | 'exchanges' | 'unverified'> & {
     count: number;
     coins: { rank: number; baseAsset: string; name: string; symbol: string }[];
   } | null;
@@ -147,7 +149,9 @@ export function createScanner(market: MarketType) {
   };
 
   async function fetchClosedCandles(symbol: string, tf: string, price: number): Promise<CandleData[]> {
-    const raw = await binanceGet(`${klinesPath}?symbol=${symbol}&interval=${tf}&limit=250`, 8000, market);
+    const raw = market === 'futures'
+      ? await futuresKlines(symbol, tf, 250)
+      : await binanceGet(`${klinesPath}?symbol=${symbol}&interval=${tf}&limit=250`, 8000, market);
     const decimals = priceDecimals(price);
     const parsed: CandleData[] = [];
     for (const k of raw as any[]) {
@@ -171,12 +175,14 @@ export function createScanner(market: MarketType) {
         fetchedAt: universe.fetchedAt,
         skipped: universe.skipped,
         exchanges: universe.exchanges,
+        unverified: universe.unverified,
         coins: universe.coins.map(({ rank, baseAsset, name, symbol }) => ({ rank, baseAsset, name, symbol })),
         count: universe.coins.length
       };
 
-      const priceList: any[] = await binanceGet(pricePath, 8000, market);
-      const prices = new Map<string, number>(priceList.map((p) => [p.symbol, parseFloat(p.price)]));
+      const prices = market === 'futures'
+        ? await futuresPrices(universe.coins.map((c) => c.symbol))
+        : new Map<string, number>(((await binanceGet(pricePath, 8000, market)) as any[]).map((p) => [p.symbol, parseFloat(p.price)]));
 
       const jobs = universe.coins.flatMap((coin) => TIMEFRAMES.map((tf) => ({ coin, tf })));
       const fresh: StoredSignal[] = [];
@@ -210,6 +216,7 @@ export function createScanner(market: MarketType) {
       state.scannedPairs = jobs.length - failed;
       state.failedPairs = failed;
       state.lastError = failed === jobs.length ? 'Nenhum par pôde ser analisado (corretora indisponível?)' : null;
+      if (market === 'futures') state.dataSource = getFuturesProvider() ?? undefined;
       save();
     } catch (e: any) {
       state.lastError = e?.message || 'Erro desconhecido no scanner';

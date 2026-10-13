@@ -146,6 +146,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, scanInfos,
                   {(info.exchanges ?? ['binance']).map((e) => (e === 'bybit' ? 'Bybit' : 'Binance')).join(' e ')}.
                 </p>
                 <p>Última varredura: {new Date(info.lastScanAt).toLocaleString('pt-BR')}.</p>
+                {m === 'futures' && info.dataSource && (
+                  <p className={info.dataSource === 'binance' ? '' : 'text-amber-300'}>
+                    Dados de futuros via {({ binance: 'Binance', bybit: 'Bybit', okx: 'OKX' } as Record<string, string>)[info.dataSource] ?? info.dataSource}
+                    {info.dataSource !== 'binance' && ' (a Binance de futuros não respondeu a partir deste servidor; os preços são muito próximos, mas confira na sua corretora antes de operar)'}.
+                  </p>
+                )}
+                {info.unverified && info.unverified.length > 0 && (
+                  <p className="text-xs text-slate-500">Não foi possível verificar a lista de moedas em: {info.unverified.map((e) => (e === 'bybit' ? 'Bybit' : 'Binance')).join(', ')}.</p>
+                )}
                 {info.skipped.length > 0 && (
                   <details>
                     <summary className="cursor-pointer text-slate-400">{info.skipped.length} moedas ignoradas</summary>

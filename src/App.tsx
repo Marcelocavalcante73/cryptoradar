@@ -191,6 +191,8 @@ export default function App() {
             universeCount: j.universe?.count ?? 0,
             exchanges: j.universe?.exchanges,
             market: m,
+            dataSource: j.dataSource,
+            unverified: j.universe?.unverified,
             skipped: j.universe?.skipped ?? [],
             coins: j.universe?.coins ?? [],
             running: j.running
