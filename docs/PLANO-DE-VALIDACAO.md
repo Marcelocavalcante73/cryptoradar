@@ -38,6 +38,14 @@ Testada no app (Backtest → "Rompimento de 55 dias") ou por `npm run backtest -
 
 **Primeiro resultado (spot, 50 moedas, diário, ~4 anos):** 345 operações, fator de lucro 2,22, média de +9,2% por operação e as duas metades do período com fator 2,25 e 2,20. Passou nos critérios, **mas com ressalvas que precisam ser testadas antes da simulação**: (1) o universo é o top 100 de *hoje*, que favorece quem sobreviveu e subiu; (2) o lucro médio vem de poucas vitórias muito grandes (taxa de acerto de 27%); (3) o período inclui um ciclo de alta forte; (4) as moedas se movem juntas, então 345 operações valem bem menos que 345 observações independentes. Por isso o teste ganhou três verificações extras: capital com no máximo 5 posições abertas ao mesmo tempo, resultado sem os 5 melhores trades (sexto critério) e a lista fixa **"Grandes de 2022"** (17 moedas escolhidas antes do resultado, incluindo as que ficaram para trás). A estratégia só segue para a simulação ao vivo se passar também nesses testes.
 
+### Validação ao vivo da estratégia de tendência (aba Tendência)
+
+No backtest das 17 "Grandes de 2022" (164 operações): fator de lucro 2,19, média de +7,7% por operação, metades do período em 2,21 e 2,17, e fator 1,32 sem os 5 melhores trades. Passou em todos os critérios.
+
+Como ela dá poucos sinais (cerca de 3 por mês nessas 17 moedas), a validação ao vivo é medida em **meses**: pelo menos **10 operações encerradas** e **12 semanas** de acompanhamento, com resultado médio positivo e fator de lucro de 1,3 ou mais (semáforo na própria aba). Rotina diária: depois das 21h (horário de Brasília, fechamento da vela diária), olhe a aba ou espere o alerta no Telegram. **Entrada:** compra na abertura do dia seguinte, com o stop colocado na corretora na hora. **Saída:** pelo stop, ou quando o app avisar que o fechamento ficou abaixo da mínima de 20 dias (vende na abertura seguinte). Não há alvo fixo.
+
+Com dinheiro real, só depois de o semáforo ficar verde, com valor pequeno (arrisque 0,5% a 1% do capital por operação) e sabendo que a estratégia **perde em cerca de 7 de cada 10 operações** e depende de poucas grandes altas.
+
 ## Fase 2: simulação ao vivo, 4 semanas (mínimo)
 
 Regras para a simulação valer:

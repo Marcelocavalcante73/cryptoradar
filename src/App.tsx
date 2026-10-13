@@ -19,6 +19,8 @@ import { WalletView } from './components/paperTrading/WalletView';
 import { SignalsView, ScanInfo } from './components/signals/SignalsView';
 import { SettingsView } from './components/settings/SettingsView';
 import { BacktestView } from './components/backtest/BacktestView';
+import { TrendView, TrendInfo } from './components/trend/TrendView';
+import { TrendSignal } from './services/trendSignals';
 import { TradeSheet, TradeRequest } from './components/paperTrading/TradeSheet';
 
 const MARKETS: MarketType[] = ['spot', 'futures'];
@@ -43,7 +45,8 @@ export default function App() {
   const [selectedCoin, setSelectedCoin] = useState<CryptoAsset>(INITIAL_ASSETS[0]);
   const [detailsMarket, setDetailsMarket] = useState<MarketType>('spot');
   const [backTab, setBackTab] = useState<ScreenTab>('market');
-  const [trade, setTrade] = useState<{ market: MarketType; asset: CryptoAsset; signal?: TechnicalSignal } | null>(null);
+  const [trade, setTrade] = useState<{ market: MarketType; asset: CryptoAsset; signal?: TechnicalSignal; noTarget?: boolean } | null>(null);
+  const [trend, setTrend] = useState<TrendInfo | null>(null);
 
   const [accounts, setAccounts] = useState<Record<MarketType, PaperAccount>>(() => ({
     spot: StorageService.getPaperAccount('spot'),
@@ -63,11 +66,13 @@ export default function App() {
   const assetsRef = useRef(assets);
   const futuresAssetsRef = useRef(futuresAssets);
   const scanInfosRef = useRef(scanInfos);
+  const trendRef = useRef<TrendInfo | null>(null);
   accountsRef.current = accounts;
   signalsRef.current = signalsBy;
   assetsRef.current = assets;
   futuresAssetsRef.current = futuresAssets;
   scanInfosRef.current = scanInfos;
+  trendRef.current = trend;
 
   const signals = signalsBy[market];
   const scanInfo = scanInfos[market];
@@ -95,6 +100,8 @@ export default function App() {
       const extra = new Set<string>();
       accountsRef.current.spot.positions.forEach((p) => !have.has(p.symbol) && extra.add(p.symbol));
       scanInfosRef.current.spot?.coins?.forEach((c) => !have.has(c.symbol) && extra.add(c.symbol));
+      trendRef.current?.watch?.forEach((w) => !have.has(w.symbol) && extra.add(w.symbol));
+      trendRef.current?.signals?.forEach((t) => !have.has(t.symbol) && extra.add(t.symbol));
       signalsRef.current.spot.forEach((s) => !s.isDemo && s.status === 'OPEN' && !have.has(s.symbol) && extra.add(s.symbol));
       const extraAssets = extra.size ? await apiService.fetchAssetsBySymbols(Array.from(extra)) : [];
       const data = [...base, ...extraAssets];
@@ -200,6 +207,30 @@ export default function App() {
     return () => { cancelled = true; clearInterval(id); };
   }, []);
 
+  // Scanner diário da estratégia de tendência
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const r = await fetch('/api/trend', { signal: AbortSignal.timeout(5000) });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const j: TrendInfo = await r.json();
+        if (!cancelled) setTrend(j);
+      } catch {
+        if (!cancelled) setTrend(null);
+      }
+    };
+    load();
+    const id = setInterval(load, 60000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  const trendCount = trend?.watch?.length ?? 0;
+  useEffect(() => {
+    if (trendCount > 0) refreshPrices();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trendCount]);
+
   const handleSaveSettings = (next: AppSettings) => {
     setSettings(next);
     StorageService.saveSettings(next);
@@ -229,6 +260,18 @@ export default function App() {
   const openTrade = (m: MarketType, asset: CryptoAsset, signal?: TechnicalSignal) => {
     setTrade({ market: m, asset, signal });
     if (m === 'futures') refreshPrices(); // garante o preço do contrato antes de confirmar
+  };
+
+  // Simula a compra de um sinal de tendência (spot, sem alvo fixo)
+  const openTrendTrade = (t: TrendSignal) => {
+    const asset = findAsset(t.symbol, t.entryPrice ?? t.refPrice, 'spot');
+    const pseudo: TechnicalSignal = {
+      id: t.id, symbol: t.symbol, baseAsset: t.baseAsset, direction: 'LONG', strategy: 'BREAKOUT_RESISTANCE',
+      strategyName: 'Rompimento de 55 dias', timeframe: '1D', entryPrice: t.entryPrice ?? t.refPrice, targetPrice: 0,
+      stopLossPrice: t.stopPrice, riskRewardRatio: '—', status: 'OPEN', technicalReason: '', indicatorsTriggered: [],
+      timestamp: '', isDemo: false, disclaimer: '', market: 'spot'
+    };
+    setTrade({ market: 'spot', asset, signal: pseudo, noTarget: true });
   };
 
   // Ordem simulada a mercado. Spot: só compra, sem alavancagem. Futuros: long/short com alavancagem e margem isolada.
@@ -268,6 +311,18 @@ export default function App() {
     if (res.success && res.account) {
       if (settings.soundAlerts) (res.position?.realizedPnl || 0) >= 0 ? soundService.playSuccess() : soundService.playAlert();
       commitAccount(market, res.account);
+    }
+  };
+
+  const handleCloseSpotPosition = (positionId: string) => {
+    const acc = accountsRef.current.spot;
+    const pos = acc.positions.find((p) => p.id === positionId);
+    if (!pos) return;
+    const live = assetsRef.current.find((a) => a.symbol === pos.symbol && !a.isDemoData)?.price;
+    const res = closeOpenPosition(acc, positionId, live || pos.currentPrice || pos.entryPrice, 'MANUAL');
+    if (res.success && res.account) {
+      if (settings.soundAlerts) (res.position?.realizedPnl || 0) >= 0 ? soundService.playSuccess() : soundService.playAlert();
+      commitAccount('spot', res.account);
     }
   };
 
@@ -329,6 +384,17 @@ export default function App() {
             />
           )}
 
+          {activeTab === 'trend' && (
+            <TrendView
+              trend={trend}
+              assets={assets}
+              account={accounts.spot}
+              onSimulate={openTrendTrade}
+              onClosePosition={(id) => { if (market !== 'spot') changeMarket('spot'); handleCloseSpotPosition(id); }}
+              onSelectCoinBySymbol={(sym) => handleSelectCoin(findAsset(sym, undefined, 'spot'), 'spot', 'trend')}
+            />
+          )}
+
           {activeTab === 'wallet' && (
             <WalletView
               market={market}
@@ -361,12 +427,14 @@ export default function App() {
           onSelectTab={goTo}
           openSignals={openSignals}
           openPositions={paperAccount.positions.filter((p) => p.status === 'OPEN').length}
+          openTrend={(trend?.signals ?? []).filter((t) => t.status === 'OPEN' || t.status === 'EXIT_SIGNAL').length}
         />
 
         <TradeSheet
           market={trade?.market ?? 'spot'}
           asset={trade?.asset ?? null}
           signal={trade?.signal}
+          noTarget={trade?.noTarget}
           balance={accounts[trade?.market ?? 'spot'].virtualBalance}
           defaultLeverage={settings.futuresLeverage ?? DEFAULT_FUTURES_LEVERAGE}
           riskPercent={settings.risk.maxRiskPerTradePercent}

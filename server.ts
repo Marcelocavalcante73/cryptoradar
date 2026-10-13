@@ -8,6 +8,7 @@ import { fetchHistory } from './server/history';
 import { runBacktest } from './src/services/backtest';
 import { binanceGet } from './server/universe';
 import { getBatchJob, startBatchJob } from './server/backtestJob';
+import { getTrendState, runTrendScan, startTrendScanner } from './server/trendScanner';
 
 dotenv.config();
 
@@ -284,6 +285,21 @@ app.get('/api/backtest', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/trend — sinais diários da estratégia de rompimento de 55 dias, regime do Bitcoin e lista de observação.
+ * POST /api/trend/scan — força uma varredura imediata.
+ */
+app.get('/api/trend', (_req: Request, res: Response) => {
+  res.json(getTrendState());
+});
+
+app.post('/api/trend/scan', (req: Request, res: Response) => {
+  const ip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1';
+  if (isRateLimited(ip)) return res.status(429).json({ error: 'Limite de requisições excedido.' });
+  runTrendScan();
+  res.status(202).json({ started: true });
+});
+
+/**
  * POST /api/backtest/batch {market, tf, top, bars} — inicia o backtest de várias moedas em segundo plano.
  * GET  /api/backtest/batch — andamento e resultado do último backtest em lote.
  */
@@ -324,7 +340,10 @@ async function startServer() {
     });
   }
 
-  if (process.env.SCANNER_ENABLED !== 'false') startScanner(Number(process.env.SCAN_INTERVAL_MINUTES) || 5);
+  if (process.env.SCANNER_ENABLED !== 'false') {
+    startScanner(Number(process.env.SCAN_INTERVAL_MINUTES) || 5);
+    startTrendScanner();
+  }
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`CryptoRadar fullstack server rodando na porta ${PORT} [${isProduction ? 'PROD' : 'DEV'}]`);

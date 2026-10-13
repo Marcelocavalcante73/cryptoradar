@@ -23,11 +23,11 @@ export const TREND_RULES = {
   btcSmaPeriod: 200
 } as const;
 
-const DAY_MS = 86400000;
-const dayKey = (ts: number) => Math.floor(ts / DAY_MS);
+export const DAY_MS = 86400000;
+export const dayKey = (ts: number) => Math.floor(ts / DAY_MS);
 
 /** ATR de Wilder para cada vela (undefined enquanto não há dados suficientes). */
-function atrSeries(c: CandleData[], period: number): (number | undefined)[] {
+export function atrSeries(c: CandleData[], period: number): (number | undefined)[] {
   const out: (number | undefined)[] = new Array(c.length).fill(undefined);
   if (c.length <= period) return out;
   const tr = (i: number) => Math.max(c[i].high - c[i].low, Math.abs(c[i].high - c[i - 1].close), Math.abs(c[i].low - c[i - 1].close));
@@ -54,6 +54,20 @@ export function btcRegimeByDay(btc: CandleData[], period: number = TREND_RULES.b
   return map;
 }
 
+/** Maior máxima das `n` velas anteriores à vela `i` (a própria vela `i` não entra). */
+export function donchianHigh(c: CandleData[], i: number, n: number = TREND_RULES.entryLookback): number {
+  let m = -Infinity;
+  for (let k = i - n; k < i; k++) m = Math.max(m, c[k].high);
+  return m;
+}
+
+/** Menor mínima das `n` velas anteriores à vela `i`. */
+export function donchianLow(c: CandleData[], i: number, n: number = TREND_RULES.exitLookback): number {
+  let m = Infinity;
+  for (let k = i - n; k < i; k++) m = Math.min(m, c[k].low);
+  return m;
+}
+
 export interface TrendOptions {
   feeRate: number;
   slippageRate: number;
@@ -72,8 +86,8 @@ export function runTrendBacktest(
   const trades: BacktestTrade[] = [];
   const n = candles.length;
 
-  const highestHigh = (i: number) => { let m = -Infinity; for (let k = i - R.entryLookback; k < i; k++) m = Math.max(m, candles[k].high); return m; };
-  const lowestLow = (i: number) => { let m = Infinity; for (let k = i - R.exitLookback; k < i; k++) m = Math.min(m, candles[k].low); return m; };
+  const highestHigh = (i: number) => donchianHigh(candles, i);
+  const lowestLow = (i: number) => donchianLow(candles, i);
 
   let i = Math.max(R.entryLookback, R.atrPeriod + 1);
   while (i < n - 1) {
