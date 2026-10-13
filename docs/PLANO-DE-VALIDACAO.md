@@ -36,6 +36,8 @@ Spot, 30 moedas em 1h (470 operações): fator de lucro 0,87. Spot, 50 moedas em
 
 Testada no app (Backtest → "Rompimento de 55 dias") ou por `npm run backtest -- --strategy trend --top 50 --bars 1500`. As regras foram **fixadas antes de ver o resultado** e não devem ser ajustadas depois para "passar": entrada no rompimento da máxima de 55 dias com o Bitcoin acima da média de 200 dias, stop de 2 ATR, saída quando perde a mínima de 20 dias, sem alvo fixo, velas diárias, só compras. Os mesmos critérios valem (100+ operações, fator 1,3+, média positiva e as duas metades do período com fator 1,0+). Se reprovar, a conclusão é abandonar a ideia, não variar números.
 
+**Primeiro resultado (spot, 50 moedas, diário, ~4 anos):** 345 operações, fator de lucro 2,22, média de +9,2% por operação e as duas metades do período com fator 2,25 e 2,20. Passou nos critérios, **mas com ressalvas que precisam ser testadas antes da simulação**: (1) o universo é o top 100 de *hoje*, que favorece quem sobreviveu e subiu; (2) o lucro médio vem de poucas vitórias muito grandes (taxa de acerto de 27%); (3) o período inclui um ciclo de alta forte; (4) as moedas se movem juntas, então 345 operações valem bem menos que 345 observações independentes. Por isso o teste ganhou três verificações extras: capital com no máximo 5 posições abertas ao mesmo tempo, resultado sem os 5 melhores trades (sexto critério) e a lista fixa **"Grandes de 2022"** (17 moedas escolhidas antes do resultado, incluindo as que ficaram para trás). A estratégia só segue para a simulação ao vivo se passar também nesses testes.
+
 ## Fase 2: simulação ao vivo, 4 semanas (mínimo)
 
 Regras para a simulação valer:

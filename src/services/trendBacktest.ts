@@ -112,7 +112,7 @@ export function runTrendBacktest(
 
     trades.push({
       symbol, timeframe: '1d', direction: 'LONG', score: 0,
-      entryIndex: entryIdx, entryTimestamp: candles[entryIdx].timestamp, exitIndex: exitIdx,
+      entryIndex: entryIdx, entryTimestamp: candles[entryIdx].timestamp, exitTimestamp: candles[exitIdx].timestamp, exitIndex: exitIdx,
       entryPrice: entry, exitPrice, exit, grossPct: gross, netPct: net, rMultiple: riskPct > 0 ? net / riskPct : 0
     });
 

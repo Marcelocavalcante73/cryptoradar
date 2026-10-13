@@ -6,7 +6,7 @@ import { pnlColor } from '../common/format';
 
 interface Job {
   id: number;
-  params: { strategy?: 'signals' | 'trend'; market: MarketType; tf: '1h' | '4h' | '1d'; top: number; bars: number };
+  params: { list?: 'top' | 'classic2022'; strategy?: 'signals' | 'trend'; market: MarketType; tf: '1h' | '4h' | '1d'; top: number; bars: number };
   status: 'running' | 'done' | 'error';
   done: number;
   total: number;
@@ -52,6 +52,7 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const [market, setMarket] = useState<MarketType>('spot');
   const [tf, setTf] = useState<'1h' | '4h'>('1h');
   const [top, setTop] = useState(30);
+  const [list, setList] = useState<'top' | 'classic2022'>('top');
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -87,7 +88,7 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
       const r = await fetch('/api/backtest/batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ strategy, market, tf, top, bars: strategy === 'trend' ? 1500 : 3000 })
+        body: JSON.stringify({ strategy, market, tf, top, list, bars: strategy === 'trend' ? 1500 : 3000 })
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j?.error || `Erro ${r.status}`);
@@ -140,7 +141,13 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
         )}
         <div>
           <div className="text-sm text-slate-400 mb-1.5">Moedas testadas</div>
-          <Seg value={String(top)} onChange={(v) => setTop(Number(v))} options={[['10', '10'], ['30', '30'], ['50', '50']]} />
+          <Seg value={list === 'classic2022' ? 'c22' : String(top)} onChange={(v) => { if (v === 'c22') setList('classic2022'); else { setList('top'); setTop(Number(v)); } }}
+            options={[['10', '10'], ['30', '30'], ['50', '50'], ['c22', 'Grandes de 2022']]} />
+          {list === 'classic2022' && (
+            <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+              Lista fixa das 17 maiores moedas de 2022 (BTC, ETH, BNB, XRP, ADA, DOGE, SOL, TRX, DOT, LTC, AVAX, LINK, ATOM, XLM, ETC, BCH, UNI), definida antes dos resultados. Evita escolher só as moedas que subiram até hoje. Só spot.
+            </p>
+          )}
         </div>
         <button onClick={run} disabled={running} className="w-full bg-slate-100 text-slate-900 font-semibold py-3.5 rounded-lg text-base disabled:opacity-40">
           {running ? 'Rodando…' : 'Rodar backtest'}
@@ -200,8 +207,10 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
               <Stat label="Acerto" value={`${a.winRate.toFixed(0)}%`} />
               <Stat label="Fator de lucro" value={pf(a.profitFactor)} color={a.profitFactor === null || a.profitFactor >= BACKTEST_CRITERIA.minProfitFactor ? 'text-emerald-400' : 'text-rose-400'} />
               <Stat label="Média por operação" value={pct(a.avgNetPct)} color={pnlColor(a.avgNetPct)} />
-              <Stat label="Capital com 1% de risco" value={pct(sum.risk1.returnPct)} color={pnlColor(sum.risk1.returnPct)} />
+              <Stat label="Capital (1% de risco)" value={pct(sum.risk1.returnPct)} color={pnlColor(sum.risk1.returnPct)} />
               <Stat label="Maior queda do capital" value={`${sum.risk1.maxDrawdownPct.toFixed(1)}%`} />
+              <Stat label="Sem os 5 melhores trades" value={`fator ${pf(sum.withoutTop5.profitFactor)}`} color={sum.withoutTop5.profitFactor === null || sum.withoutTop5.profitFactor >= 1 ? 'text-emerald-400' : 'text-rose-400'} />
+              <Stat label="Lucro dos 5 melhores" value={`${sum.top5SharePct.toFixed(0)}% do total`} />
             </div>
             <div className="mt-3">
               <HalfRow label="Primeira metade do período" s={sum.firstHalf} />
@@ -212,7 +221,7 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
               {job.failedSymbols.length > 0 && ` · não testadas: ${job.failedSymbols.length}`}
             </p>
             <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-              Capital e queda: simulação arriscando 1% por operação, com ganhos e perdas compostos, na ordem do tempo. Operações simultâneas contam todas, então a queda real pode diferir.
+              Capital e queda: arriscando 1% do capital por operação, no máximo 5 posições abertas ao mesmo tempo (as demais são puladas: {sum.risk1.skipped} de {sum.risk1.taken + sum.risk1.skipped}), com ganhos e perdas compostos. O resultado real depende de você conseguir executar todas.
             </p>
           </section>
 

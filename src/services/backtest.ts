@@ -41,6 +41,7 @@ export interface BacktestTrade {
   score: number;
   entryIndex: number;
   entryTimestamp?: number; // ms; permite ordenar operações de várias moedas no tempo
+  exitTimestamp?: number;
   exitIndex: number;
   entryPrice: number;
   exitPrice: number;
@@ -165,7 +166,7 @@ export function runBacktest(
 
     trades.push({
       symbol, timeframe, direction: sig.direction, score: sig.score,
-      entryIndex: i + 1, entryTimestamp: entryBar.timestamp, exitIndex: exitIdx, entryPrice: entry, exitPrice, exit,
+      entryIndex: i + 1, entryTimestamp: entryBar.timestamp, exitTimestamp: candles[exitIdx].timestamp, exitIndex: exitIdx, entryPrice: entry, exitPrice, exit,
       grossPct, netPct, rMultiple: riskPct > 0 ? netPct / riskPct : 0
     });
 

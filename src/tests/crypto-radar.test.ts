@@ -55,7 +55,7 @@ import { suggestAmount } from '../components/paperTrading/TradeSheet';
 import { historyToCsv } from '../components/paperTrading/WalletView';
 import { liquidationPrice, stopBeforeLiquidation, maxSafeLeverage, futuresSizing } from '../services/futures';
 import { positionUnrealizedPnl } from '../services/paperTradingService';
-import { summarizeBatch, riskCurve } from '../services/backtestBatch';
+import { summarizeBatch, riskCurve, withoutBest } from '../services/backtestBatch';
 import { runTrendBacktest, btcRegimeByDay, TREND_RULES } from '../services/trendBacktest';
 import { startBatchJob, getBatchJob } from '../../server/backtestJob';
 import { evaluateSignal, scoreCandles, MIN_SCORE } from '../services/signalEngine';
@@ -1151,7 +1151,7 @@ console.log('\n--- Backtest em lote ---');
   for (let i = 0; i < 400 && getBatchJob()?.status === 'running'; i++) await new Promise((r) => setTimeout(r, 50));
   const done = getBatchJob()!;
   assert(done.status === 'done' && done.done === 5 && done.total === 5, 'Trabalho termina com as 5 moedas testadas', `${done.status} ${done.done}/${done.total} ${done.error ?? ''}`);
-  assert(done.summary!.rows.length === 5 && done.summary!.checks.length === 5, 'Resultado traz tabela por moeda e os 5 critérios');
+  assert(done.summary!.rows.length === 5 && done.summary!.checks.length === 6, 'Resultado traz tabela por moeda e os 6 critérios');
   assert(done.summary!.aggregate.shortTrades === 0, 'Spot no lote: nenhuma operação vendida');
   globalThis.fetch = realFetchJ;
 }
@@ -1244,6 +1244,55 @@ console.log('\n--- Tendência: rompimento de 55 dias ---');
   assert([...intervalsAsked].every((i) => i === '1d'), 'Tendência sempre usa velas diárias, mesmo se pedirem outro tempo', [...intervalsAsked].join(','));
   assert(tj.summary!.rows.length === 3 && tj.summary!.risk1 !== undefined, 'Resultado traz tabela e curva de capital');
   globalThis.fetch = realFetchT;
+}
+
+// Capital com limite de posições simultâneas e robustez sem os melhores trades
+{
+  const mk = (r: number, entryTs: number, exitTs: number): BacktestTrade => ({ symbol: 'X', timeframe: '1d', direction: 'LONG', score: 0, entryIndex: entryTs, entryTimestamp: entryTs, exitTimestamp: exitTs, exitIndex: exitTs, entryPrice: 1, exitPrice: 1, exit: 'TRAIL', grossPct: r, netPct: r, rMultiple: r });
+  // 3 operações simultâneas, limite de 2: a terceira é pulada
+  const c2 = riskCurve([mk(2, 1, 10), mk(2, 2, 10), mk(2, 3, 10)], 0.01, 2);
+  assert(c2.taken === 2 && c2.skipped === 1, 'Acima do limite de posições abertas, a operação é pulada');
+  assert(Math.abs(c2.returnPct - 4) < 1e-9, 'Duas operações de +2R com 1% de risco sobre o capital inicial: +4%', c2.returnPct.toFixed(4));
+  // Sequenciais: o risco é recalculado sobre o capital atual (juros compostos)
+  const seq = riskCurve([mk(2, 1, 2), mk(2, 3, 4)], 0.01, 2);
+  assert(Math.abs(seq.returnPct - (1.02 * 1.02 - 1) * 100) < 1e-9 && seq.skipped === 0, 'Operações em sequência compõem sobre o capital atual');
+  // Perdas simultâneas
+  const dd = riskCurve([mk(-1, 1, 5), mk(-1, 2, 5)], 0.01, 5);
+  assert(Math.abs(dd.maxDrawdownPct - (1 - 0.99 * (1 - 0.01 * 1)) * 100) < 0.02 && dd.returnPct < -1.9, 'Duas perdas simultâneas de 1%: queda de cerca de 2%', dd.maxDrawdownPct.toFixed(3));
+
+  // Lucro concentrado: 5 trades gigantes e 95 perdas pequenas
+  const lucky = [...Array.from({ length: 5 }, (_, i) => mk(50, i, i + 1)), ...Array.from({ length: 95 }, (_, i) => mk(-1, 100 + i, 101 + i))];
+  const wb = withoutBest(lucky, 5);
+  assert(wb.trades === 95 && wb.profitFactor === 0, 'Retirando os 5 melhores, só sobram perdas (fator 0)');
+  const luckySummary = summarizeBatch([{ symbol: 'L', timeframe: '1d', candlesUsed: 1000, trades: lucky.map((t, i) => ({ ...t, entryIndex: i < 5 ? 10 + i : i < 50 ? 100 + i : 600 + i })), stats: computeStats(lucky) } as any]);
+  assert(luckySummary.checks[5].ok === false && luckySummary.top5SharePct === 100, 'Verificação "sem os 5 melhores" reprova lucro concentrado e informa que eles são 100% do lucro');
+}
+
+// Lista fixa das grandes moedas de 2022: não depende do ranking de hoje
+{
+  const realFetchC = globalThis.fetch;
+  const jsonC = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  const symbolsAsked = new Set<string>();
+  globalThis.fetch = ((url: any) => {
+    const u = String(url);
+    if (u.includes('/api/v3/klines')) {
+      const q = new URL(u).searchParams;
+      symbolsAsked.add(q.get('symbol') || '');
+      const limit = Number(q.get('limit') || 500);
+      let p = 100;
+      return jsonC(Array.from({ length: limit }, (_, i) => {
+        const o = p; p *= 1 + 0.003 + Math.sin(i / 9) * 0.02;
+        return [1_600_000_000_000 + i * 86_400_000, String(o), String(Math.max(o, p) * 1.01), String(Math.min(o, p) * 0.99), String(p), '1000', 0, '0', 0, '0', '0', '0'];
+      }));
+    }
+    return Promise.reject(new Error('url inesperada (a lista fixa não deve consultar o ranking): ' + u));
+  }) as typeof fetch;
+  startBatchJob({ list: 'classic2022', strategy: 'trend', market: 'spot', tf: '1d', top: 30, bars: 700 });
+  for (let i = 0; i < 400 && getBatchJob()?.status === 'running'; i++) await new Promise((r) => setTimeout(r, 50));
+  const cj = getBatchJob()!;
+  assert(cj.status === 'done' && cj.total === 17 && cj.done === 17, 'Lista fixa de 2022 testa as 17 moedas sem consultar o ranking', `${cj.status} ${cj.done}/${cj.total} ${cj.error ?? ''}`);
+  assert(symbolsAsked.has('BTCUSDT') && symbolsAsked.has('ETCUSDT') && symbolsAsked.has('LTCUSDT'), 'A lista inclui moedas que ficaram para trás (ETC, LTC) e o BTC');
+  globalThis.fetch = realFetchC;
 }
 
 console.log('\n========================================================');
