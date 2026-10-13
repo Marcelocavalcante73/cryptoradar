@@ -619,6 +619,32 @@ export class CryptoApiService implements MarketDataProvider {
     return out;
   }
 
+  /**
+   * Candles dos perpétuos USDT-M, via proxy do servidor (/api/futures/klines).
+   * Sem resposta real, devolve isLive=false e lista vazia: nunca inventa candles.
+   */
+  async fetchFuturesKlines(symbol: string, timeframe: Timeframe, limit: number = 300): Promise<KlineFetchResult> {
+    const interval = timeframeToBinanceInterval(timeframe);
+    try {
+      const r = await fetch(`/api/futures/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`, {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(8000)
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const raw = await r.json();
+      if (!Array.isArray(raw)) throw new Error('resposta inválida');
+      const parsed: CandleData[] = [];
+      for (const k of raw) {
+        const c = parseBinanceKline(k, timeframe, 10);
+        if (c) parsed.push(c);
+      }
+      if (parsed.length < 5) throw new Error('velas insuficientes');
+      return { candles: calculateAllIndicators(parsed, 10), isLive: true, source: 'BINANCE_LIVE', symbol, timeframe };
+    } catch (err: any) {
+      return { candles: [], isLive: false, source: 'DEMO_SYNTHETIC', symbol, timeframe, errorMessage: err?.message || 'indisponível' };
+    }
+  }
+
   async fetchTickerBySymbol(symbol: string): Promise<CryptoAsset | null> {
     const list = await this.fetchTickers();
     return list.find((a) => a.symbol === symbol) || null;

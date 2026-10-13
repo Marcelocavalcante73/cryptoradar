@@ -21,6 +21,7 @@ export interface BacktestOptions {
   maxHoldBars: number;
   minScore?: number;    // filtro adicional sobre a pontuação do motor
   longOnly?: boolean;   // spot: ignora sinais de VENDA (não há short)
+  fundingPer8h?: number; // futuros: taxa de funding por 8h, cobrada nos dois lados (conservador). Ex: 0.0001 = 0,01%
 }
 
 export const DEFAULT_BACKTEST_OPTIONS: BacktestOptions = {
@@ -28,6 +29,8 @@ export const DEFAULT_BACKTEST_OPTIONS: BacktestOptions = {
   slippageRate: 0.0005,
   maxHoldBars: 48
 };
+
+const BAR_HOURS: Record<string, number> = { '15m': 0.25, '1h': 1, '4h': 4, '1d': 24, '1D': 24, '1w': 168, '1W': 168 };
 
 export type TradeExit = 'TARGET' | 'STOP' | 'TIMEOUT';
 
@@ -150,7 +153,10 @@ export function runBacktest(
     }
 
     const grossPct = sign * ((exitPrice - entry) / entry) * 100;
-    const costPct = 2 * (opt.feeRate + opt.slippageRate) * 100;
+    // Funding: cobrado pelo tempo em que a posição ficou aberta. Conservador: pago nos dois lados (long e short).
+    const heldHours = (exitIdx - (i + 1) + 1) * (BAR_HOURS[timeframe] ?? 1);
+    const fundingPct = (opt.fundingPer8h ?? 0) * (heldHours / 8) * 100;
+    const costPct = 2 * (opt.feeRate + opt.slippageRate) * 100 + fundingPct;
     const netPct = grossPct - costPct;
     const riskPct = ((sig.atr * ATR_STOP_MULT) / entry) * 100;
 

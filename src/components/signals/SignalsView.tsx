@@ -1,8 +1,10 @@
 import React, { useState, useMemo } from 'react';
-import { TechnicalSignal, PaperAccount } from '../../types/crypto';
+import { TechnicalSignal, PaperAccount, MarketType } from '../../types/crypto';
 import { PerformancePanel } from './PerformancePanel';
 import { fmtPrice, fmtUsd, timeAgo } from '../common/format';
 import { suggestAmount } from '../paperTrading/TradeSheet';
+import { futuresSizing, maxSafeLeverage, DEFAULT_FUTURES_LEVERAGE } from '../../services/futures';
+import { TRADING_FEE_RATE } from '../../services/paperTradingService';
 
 export interface ScanInfo {
   lastScanAt: number | null;
@@ -11,7 +13,7 @@ export interface ScanInfo {
   universeSource: string | null;
   universeCount: number;
   exchanges?: string[];
-  marketMode?: 'spot' | 'futures';
+  market?: MarketType;
   skipped: string[];
   coins?: { rank: number; baseAsset: string; name: string; symbol: string }[];
   running: boolean;
@@ -20,6 +22,8 @@ export interface ScanInfo {
 type SignalExt = TechnicalSignal & { createdAt?: number; spotExit?: boolean; score?: number };
 
 interface SignalsViewProps {
+  market: MarketType;
+  futuresLeverage?: number;
   scanInfo?: ScanInfo | null;
   signals: TechnicalSignal[];
   account: PaperAccount;
@@ -47,6 +51,8 @@ const Seg: React.FC<{ value: string; options: [string, string][]; onChange: (v: 
 );
 
 export const SignalsView: React.FC<SignalsViewProps> = ({
+  market,
+  futuresLeverage = DEFAULT_FUTURES_LEVERAGE,
   scanInfo,
   signals,
   account,
@@ -62,7 +68,8 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
   const [side, setSide] = useState<'all' | 'buy' | 'sell'>('all');
 
   const live = scanInfo && scanInfo.lastScanAt && !scanInfo.lastError;
-  const spot = (scanInfo?.marketMode ?? 'spot') === 'spot';
+  const spot = market === 'spot';
+  const futures = !spot;
 
   const list = useMemo(() => {
     return (signals as SignalExt[])
@@ -75,13 +82,15 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
     ? `${scanInfo!.universeCount} moedas analisadas · atualizado ${new Date(scanInfo!.lastScanAt!).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`
     : scanInfo?.running
     ? 'Analisando o mercado…'
-    : 'Exemplos — scanner indisponível';
+    : futures ? 'Scanner indisponível' : 'Exemplos — scanner indisponível';
 
   return (
     <div className="space-y-4 pb-24">
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-lg font-semibold text-slate-100">Sinais</h2>
-        <span className="text-xs text-slate-400">{statusText}</span>
+        <h2 className="text-lg font-semibold text-slate-100 whitespace-nowrap">
+          Sinais <span className="text-slate-500 font-normal">· {futures ? 'Futuros' : 'Spot'}</span>
+        </h2>
+        <span className="text-xs text-slate-400 text-right">{statusText}</span>
       </div>
 
       {isDemoData && (
@@ -98,16 +107,25 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
         </div>
       )}
 
+      {futures && (
+        <p className="text-sm text-slate-300 bg-[#161920] border border-[#23272f] rounded-xl p-3 leading-relaxed">
+          Futuros têm risco de <span className="text-rose-400 font-medium">liquidação</span>: com alavancagem, uma variação pequena pode apagar toda a margem.
+          Use alavancagem baixa e o stop sempre.
+        </p>
+      )}
+
       {!live && !scanInfo?.running && !isDemoData && (
         <p className="text-sm text-amber-300 bg-[#161920] border border-[#23272f] rounded-xl p-3 leading-relaxed">
           {scanInfo?.lastError ? `Scanner com erro: ${scanInfo.lastError}. ` : ''}
-          Os sinais abaixo são de exemplo e não refletem o mercado agora.
+          {futures
+            ? 'Os sinais de futuros dependem do servidor e da API de futuros da Binance e da Bybit; verifique se o servidor alcança essas APIs.'
+            : 'Os sinais abaixo são de exemplo e não refletem o mercado agora.'}
         </p>
       )}
 
       <div className="flex flex-wrap items-center gap-2">
         <Seg value={status} onChange={(v) => setStatus(v as 'open' | 'closed')} options={[['open', 'Abertos'], ['closed', 'Encerrados']]} />
-        <Seg value={side} onChange={(v) => setSide(v as 'all' | 'buy' | 'sell')} options={[['all', 'Todos'], ['buy', 'Compra'], ['sell', 'Venda']]} />
+        <Seg value={side} onChange={(v) => setSide(v as 'all' | 'buy' | 'sell')} options={[['all', 'Todos'], ['buy', futures ? 'Long' : 'Compra'], ['sell', futures ? 'Short' : 'Venda']]} />
       </div>
 
       {list.length === 0 ? (
@@ -133,7 +151,7 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
                     <span className="text-xs text-slate-500">{s.timeframe}</span>
                   </button>
                   <span className={`text-sm font-semibold ${buy ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {buy ? 'Comprar' : exitOnly ? 'Vender (sair)' : 'Vender'}
+                    {futures ? (buy ? 'Long (comprar)' : 'Short (vender)') : buy ? 'Comprar' : exitOnly ? 'Vender (sair)' : 'Vender'}
                   </span>
                 </div>
 
@@ -156,7 +174,23 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
                   </div>
                 )}
 
+                {s.status === 'OPEN' && futures && (
+                  <p className="text-xs text-slate-500 mt-2">
+                    Alavancagem segura para este stop: até {maxSafeLeverage(s.entryPrice, s.stopLossPrice)}x
+                  </p>
+                )}
+
                 {s.status === 'OPEN' && !exitOnly && realCapital > 0 && (() => {
+                  if (futures) {
+                    const lev = Math.min(futuresLeverage, maxSafeLeverage(s.entryPrice, s.stopLossPrice));
+                    const sz = futuresSizing({ balance: realCapital, entry: s.entryPrice, stop: s.stopLossPrice, riskPercent: realRiskPercent, leverage: lev, feeRate: TRADING_FEE_RATE });
+                    return sz.notional > 0 ? (
+                      <p className="text-sm text-slate-300 mt-3 bg-[#0f1115] border border-[#23272f] rounded-lg px-3 py-2">
+                        Para {fmtUsd(realCapital)} com {lev}x: margem ≈ <span className="font-medium text-slate-100">{fmtUsd(sz.margin)}</span>
+                        <span className="text-slate-500"> (posição {fmtUsd(sz.notional)}) · perde ≈ {fmtUsd(sz.maxLoss)} se bater o stop</span>
+                      </p>
+                    ) : null;
+                  }
                   const size = suggestAmount(realCapital, s.entryPrice, s.stopLossPrice, realRiskPercent);
                   const loss = size * ((s.entryPrice - s.stopLossPrice) / s.entryPrice);
                   return size > 0 ? (
@@ -198,6 +232,7 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
 
       <p className="text-xs text-slate-500 leading-relaxed">
         Sinais técnicos automáticos, não são recomendação de investimento. Cripto é arriscado: use sempre o stop.
+        {futures && ' Em futuros você pode perder toda a margem; nunca opere sem stop.'}
       </p>
     </div>
   );

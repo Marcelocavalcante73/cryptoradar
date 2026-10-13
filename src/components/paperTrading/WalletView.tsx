@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
-import { PaperAccount, PaperPosition, CryptoAsset } from '../../types/crypto';
-import { calculateAccountMetrics, TRADING_FEE_RATE } from '../../services/paperTradingService';
+import { PaperAccount, PaperPosition, CryptoAsset, MarketType } from '../../types/crypto';
+import { calculateAccountMetrics, positionUnrealizedPnl } from '../../services/paperTradingService';
+import { liquidationPrice } from '../../services/futures';
 import { fmtPrice, fmtUsd, fmtPct, pnlColor } from '../common/format';
 
 interface WalletViewProps {
+  market: MarketType;
   account: PaperAccount;
   assets: CryptoAsset[];
   onClosePosition: (id: string) => void;
@@ -21,7 +23,7 @@ const REASON: Record<string, string> = {
 };
 
 export function historyToCsv(history: PaperPosition[]): string {
-  const head = ['abertura', 'fechamento', 'moeda', 'entrada', 'saida', 'valor_usdt', 'motivo', 'taxas', 'resultado_usdt', 'resultado_pct'];
+  const head = ['abertura', 'fechamento', 'moeda', 'entrada', 'saida', 'valor_usdt', 'motivo', 'taxas', 'resultado_usdt', 'resultado_pct', 'direcao', 'alavancagem'];
   const rows = history
     .filter((h) => h.closeReason !== 'CANCELLED')
     .map((h) => [
@@ -29,13 +31,15 @@ export function historyToCsv(history: PaperPosition[]): string {
       h.closedTimestamp ? new Date(h.closedTimestamp).toISOString() : '',
       h.symbol, h.entryPrice, h.closePrice ?? '', h.investedUSDT.toFixed(2),
       REASON[h.closeReason || ''] || '', (h.totalFees ?? 0).toFixed(2),
-      (h.realizedPnl ?? 0).toFixed(2), (h.realizedPnlPercent ?? 0).toFixed(2)
+      (h.realizedPnl ?? 0).toFixed(2), (h.realizedPnlPercent ?? 0).toFixed(2),
+      h.direction, h.leverage
     ].join(','));
   return [head.join(','), ...rows].join('\n');
 }
 
-export const WalletView: React.FC<WalletViewProps> = ({ account, assets, onClosePosition, onResetBalance, onClearHistory, onSelectCoinBySymbol }) => {
+export const WalletView: React.FC<WalletViewProps> = ({ market, account, assets, onClosePosition, onResetBalance, onClearHistory, onSelectCoinBySymbol }) => {
   const [confirm, setConfirm] = useState<null | 'balance' | 'history'>(null);
+  const futures = market === 'futures';
   const metrics = calculateAccountMetrics(account, assets);
   const price = new Map(assets.map((a) => [a.symbol, a.price]));
 
@@ -59,7 +63,9 @@ export const WalletView: React.FC<WalletViewProps> = ({ account, assets, onClose
 
   return (
     <div className="space-y-5 pb-24">
-      <h2 className="text-lg font-semibold text-slate-100">Carteira simulada</h2>
+      <h2 className="text-lg font-semibold text-slate-100">
+        Carteira simulada <span className="text-slate-500 font-normal">· {futures ? 'Futuros' : 'Spot'}</span>
+      </h2>
 
       <div className={`${card} p-4`}>
         <div className="text-sm text-slate-400">Patrimônio</div>
@@ -78,22 +84,32 @@ export const WalletView: React.FC<WalletViewProps> = ({ account, assets, onClose
           <div className="space-y-3">
             {open.map((p) => {
               const now = price.get(p.symbol) || p.currentPrice || p.entryPrice;
-              const gross = p.investedUSDT * ((now - p.entryPrice) / p.entryPrice) * p.leverage;
-              const fees = (p.openFee || 0) + p.amount * now * TRADING_FEE_RATE;
-              const pnl = gross - fees;
+              const { pnl, pct } = positionUnrealizedPnl(p, now);
+              const isShort = p.direction === 'SHORT';
               return (
                 <div key={p.id} className={`${card} p-4`}>
                   <div className="flex items-center justify-between">
-                    <button onClick={() => onSelectCoinBySymbol(p.symbol)} className="text-base font-semibold text-slate-100">
+                    <button onClick={() => onSelectCoinBySymbol(p.symbol)} className="text-base font-semibold text-slate-100 text-left">
                       {p.symbol.replace('USDT', '')}
+                      {futures && (
+                        <span className={`ml-2 text-xs font-medium ${isShort ? 'text-rose-400' : 'text-emerald-400'}`}>
+                          {isShort ? 'Short' : 'Long'} {p.leverage}x
+                        </span>
+                      )}
                     </button>
                     <div className="text-right">
                       <div className={`text-base font-semibold tabular-nums ${pnlColor(pnl)}`}>{fmtUsd(pnl, true)}</div>
-                      <div className={`text-xs ${pnlColor(pnl)}`}>{fmtPct((pnl / p.investedUSDT) * 100)}</div>
+                      <div className={`text-xs ${pnlColor(pnl)}`}>{fmtPct(pct)}</div>
                     </div>
                   </div>
-                  <div className="grid grid-cols-4 gap-2 mt-3 text-sm">
-                    {[['Entrada', p.entryPrice, ''], ['Agora', now, ''], ['Stop', p.stopLossPrice, 'text-rose-400'], ['Alvo', p.targetPrice, 'text-emerald-400']].map(([l, v, c]) => (
+                  <div className={`grid ${futures ? 'grid-cols-3' : 'grid-cols-4'} gap-2 mt-3 text-sm`}>
+                    {[
+                      ['Entrada', p.entryPrice, ''],
+                      ['Agora', now, ''],
+                      ...(futures ? [['Liquidação', liquidationPrice(p.direction, p.entryPrice, p.leverage), 'text-amber-300']] : []),
+                      ['Stop', p.stopLossPrice, 'text-rose-400'],
+                      ['Alvo', p.targetPrice, 'text-emerald-400']
+                    ].map(([l, v, c]) => (
                       <div key={l as string}>
                         <div className="text-xs text-slate-500">{l}</div>
                         <div className={`tabular-nums ${c || 'text-slate-200'}`}>{v ? fmtPrice(v as number) : '—'}</div>
@@ -101,7 +117,7 @@ export const WalletView: React.FC<WalletViewProps> = ({ account, assets, onClose
                     ))}
                   </div>
                   <div className="flex items-center justify-between mt-3">
-                    <span className="text-xs text-slate-500">{fmtUsd(p.investedUSDT)} investidos</span>
+                    <span className="text-xs text-slate-500">{fmtUsd(p.investedUSDT)} {futures ? `de margem · posição ${fmtUsd(p.investedUSDT * p.leverage)}` : 'investidos'}</span>
                     <button onClick={() => onClosePosition(p.id)} className="border border-[#2a2f3a] text-slate-200 text-sm px-4 py-2 rounded-lg">
                       Encerrar
                     </button>
@@ -136,7 +152,9 @@ export const WalletView: React.FC<WalletViewProps> = ({ account, assets, onClose
                   <div key={h.id} className="px-4 py-3 flex items-center justify-between">
                     <div>
                       <div className="text-sm text-slate-100">
-                        {h.symbol.replace('USDT', '')} <span className="text-slate-500">· {REASON[h.closeReason || ''] || ''}</span>
+                        {h.symbol.replace('USDT', '')}
+                        {futures && <span className={h.direction === 'SHORT' ? 'text-rose-400' : 'text-emerald-400'}> {h.direction === 'SHORT' ? 'Short' : 'Long'} {h.leverage}x</span>}
+                        <span className={h.closeReason === 'LIQUIDATION' ? 'text-rose-400' : 'text-slate-500'}> · {REASON[h.closeReason || ''] || ''}</span>
                       </div>
                       <div className="text-xs text-slate-500 tabular-nums">
                         {fmtPrice(h.entryPrice)} → {h.closePrice ? fmtPrice(h.closePrice) : '—'} ·{' '}
@@ -184,7 +202,7 @@ export const WalletView: React.FC<WalletViewProps> = ({ account, assets, onClose
             </div>
           )}
           <p className="text-xs text-slate-500 leading-relaxed">
-            Simulação com taxa de 0,05% por operação. O histórico fica salvo neste navegador/aparelho.
+            Simulação com taxa de 0,05% por operação{futures ? ', margem isolada e liquidação a 0,5% de manutenção. Não inclui funding' : ''}. O histórico fica salvo neste navegador/aparelho.
           </p>
         </div>
       </details>

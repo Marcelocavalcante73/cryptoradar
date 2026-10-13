@@ -5,6 +5,9 @@
 
 export type ExchangeId = 'all' | 'binance' | 'bybit';
 
+/** Mercado do sinal e da carteira: à vista (spot) ou perpétuos USDT-M (futuros). */
+export type MarketType = 'spot' | 'futures';
+
 export type Timeframe = '15m' | '1h' | '4h' | '1D' | '1W';
 
 export interface CryptoAsset {
@@ -63,6 +66,7 @@ export type SignalDirection = 'LONG' | 'SHORT';
 
 export interface TechnicalSignal {
   id: string;
+  market?: MarketType;
   symbol: string;
   baseAsset: string;
   direction: SignalDirection;
@@ -155,4 +159,5 @@ export interface AppSettings {
   telegram: TelegramConfig;
   realCapital?: number;        // capital real (USDT) usado só para sugerir tamanho de posição; 0/ausente = desligado
   realRiskPercent?: number;    // % do capital real arriscado por operação (padrão 1)
+  futuresLeverage?: number;    // alavancagem padrão sugerida em futuros (padrão 3)
 }

@@ -61,9 +61,28 @@ Só se o semáforo ficar verde.
    - 8 stops seguidos ou 10% de perda do capital de teste: **pause e revise tudo**.
 6. Registre as operações reais (data, preço de entrada e saída, taxas) e compare com a simulação. Se o real for sistematicamente pior (taxas, derrapagem, atraso), revise os custos.
 
+## Futuros: validação separada e mais exigente
+
+Futuros **não herdam** a validação do spot: têm short, alavancagem e liquidação. Cada modo tem seu próprio semáforo (o do modo Futuros só conta sinais de futuros). Siga as mesmas fases, com estas diferenças:
+
+- **Backtest:** `npm run backtest -- --tf 1h --top 30 --bars 3000 --market futures` (inclui long, short e um funding conservador de 0,01% por 8h).
+- **Alavancagem:** comece com **2x ou 3x**. O app mostra a "alavancagem segura" de cada sinal (a liquidação fica pelo menos o dobro da distância do stop). Nunca passe dela.
+- **O stop tem de vir antes da liquidação.** O simulador recusa a ordem se não vier. Na corretora, use **margem isolada** e coloque o stop na hora da abertura.
+- **Limites mais curtos:** pare por 1 dia se perder 2% do capital no dia e por 1 semana se perder 5% na semana.
+- **Quanto você arrisca vem do stop, não da alavancagem.** Alavancagem maior só deixa a liquidação mais perto: o stop pode nem ser executado em um movimento brusco (gap, pavio).
+
+O que a simulação de futuros **não** captura (o real tende a ser pior):
+
+- o stop é "executado" exatamente no preço do stop, sem derrapagem;
+- o preço é checado só a cada atualização (30 s por padrão), então um pavio rápido que tocaria stop ou liquidação pode passar despercebido;
+- não há funding nas posições simuladas (só no backtest);
+- a liquidação é uma aproximação (0,5% de manutenção): a da corretora pode ser diferente, principalmente em posições grandes.
+
+Operar futuros com dinheiro real só depois de o semáforo **de futuros** ficar verde, com a mesma regra: valor pequeno, que você aceite perder por inteiro.
+
 ## Spot: como ler "Vender"
 
-Em spot, "Vender (sair)" só vale se você **já tem** a moeda. Não é para abrir operação. Se quiser operar vendido no futuro, é outra etapa (futuros), com risco bem maior, e precisaria passar por esta mesma validação separadamente.
+Em spot, "Vender (sair)" só vale se você **já tem** a moeda. Não é para abrir operação. Para operar vendido, use o modo Futuros (seção acima), que tem validação própria.
 
 ## Quando reavaliar
 

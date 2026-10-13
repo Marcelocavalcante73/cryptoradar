@@ -1,5 +1,5 @@
 /**
- * Uso: npm run backtest -- [--tf 1h] [--top 30] [--bars 2000] [--symbols BTCUSDT,ETHUSDT] [--min-score 60] [--both]
+ * Uso: npm run backtest -- [--tf 1h] [--top 30] [--bars 2000] [--symbols BTCUSDT,ETHUSDT] [--min-score 60] [--market spot|futures] [--both]
  * Roda o motor de sinais sobre o histórico real da Binance e imprime o resultado por moeda e agregado.
  */
 import { buildUniverse } from '../server/universe';
@@ -17,7 +17,9 @@ const bars = Number(arg('bars', '2000'));
 const minScore = Number(arg('min-score', '0')) || undefined;
 const symbolsArg = arg('symbols', '');
 // Spot é o padrão: só compras. Use --both para incluir vendas a descoberto (futuros).
-const longOnly = !process.argv.includes('--both') && process.env.MARKET_MODE !== 'futures';
+const market = arg('market', 'spot') === 'futures' ? 'futures' : 'spot';
+const longOnly = market === 'spot' && !process.argv.includes('--both');
+const fundingPer8h = market === 'futures' ? 0.0001 : 0; // futuros: funding conservador de 0,01% por 8h, pago nos dois lados
 
 const pct = (n: number) => `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
 
@@ -26,18 +28,18 @@ async function main() {
   if (symbolsArg) {
     targets = symbolsArg.split(',').map((s) => ({ symbol: s.trim().toUpperCase(), base: s.trim().toUpperCase().replace(/USDT$/, '') }));
   } else {
-    const u = await buildUniverse();
+    const u = await buildUniverse(market);
     targets = u.coins.slice(0, top).map((c) => ({ symbol: c.symbol, base: c.baseAsset }));
   }
 
-  console.log(`Backtest ${longOnly ? '(spot: só compras)' : '(compras e vendas)'} | timeframe ${tf} | ${targets.length} moedas | até ${bars} candles | taxa 0,1% + derrapagem 0,05% por lado\n`);
+  console.log(`Backtest ${market === 'futures' ? 'FUTUROS (compras e vendas, com funding)' : longOnly ? 'SPOT (só compras)' : 'SPOT (compras e vendas)'} | timeframe ${tf} | ${targets.length} moedas | até ${bars} candles | taxa 0,1% + derrapagem 0,05% por lado${market === 'futures' ? ' + funding 0,01%/8h' : ''}\n`);
   console.log('Moeda        Op.  Acerto   Média/op   R médio  Fator lucro  Máx.DD');
 
   const all: BacktestTrade[] = [];
   for (const t of targets) {
     try {
-      const candles = await fetchHistory(t.symbol, tf, bars);
-      const r = runBacktest(candles, t.symbol, t.base, tf, { minScore, longOnly });
+      const candles = await fetchHistory(t.symbol, tf, bars, 1, market);
+      const r = runBacktest(candles, t.symbol, t.base, tf, { minScore, longOnly, fundingPer8h });
       all.push(...r.trades);
       const s = r.stats;
       console.log(
