@@ -1,6 +1,6 @@
 # CryptoRadar
 
-Sinais de compra e venda das 100 maiores criptomoedas (por valor de mercado) que existem na **Binance e na Bybit**, com carteira simulada e histórico das simulações.
+Sinais de compra e venda das 100 maiores criptomoedas (por valor de mercado) que existem na **Binance** (spot e futuros; a Bybit fica para depois), com carteira simulada e histórico das simulações.
 
 ## Como usar
 
@@ -28,7 +28,7 @@ Pontuação de −100 a +100 combinando tendência (EMA 20/50), MACD, RSI, volum
 O app tem dois modos, escolhidos no seletor **Spot | Futuros** (cada um com seus sinais, sua carteira simulada e seu histórico):
 
 - **Spot**: só compras. “Vender (sair)” significa sair de uma posição que você já tem.
-- **Futuros** (perpétuos USDT-M): sinais de **Long** e **Short**, com alavancagem, margem isolada, preço de liquidação e alavancagem segura para cada stop. O universo é o top 100 ∩ perpétuos da Binance e da Bybit (moedas como PEPE aparecem como `1000PEPE`).
+- **Futuros** (perpétuos USDT-M): sinais de **Long** e **Short**, com alavancagem, margem isolada, preço de liquidação e alavancagem segura para cada stop. O universo é o top 100 ∩ perpétuos da Binance (moedas como PEPE aparecem como `1000PEPE`).
 
 ## Variáveis (.env)
 
@@ -36,7 +36,7 @@ O app tem dois modos, escolhidos no seletor **Spot | Futuros** (cada um com seus
 | --- | --- |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Alertas automáticos de cada sinal novo |
 | `CMC_API_KEY` | Usar CoinMarketCap em vez do CoinGecko para o ranking |
-| `EXCHANGES` | `binance,bybit` (padrão). O par precisa existir em todas as listadas |
+| `EXCHANGES` | `binance` (padrão). `binance,bybit` exige o par nas duas corretoras (Bybit ainda não é suportada de ponta a ponta) |
 | `FUTURES_ENABLED` | `true` (padrão). Use `false` para desligar o scanner de futuros |
 | `SCAN_INTERVAL_MINUTES` | Intervalo da varredura (padrão 5) |
 

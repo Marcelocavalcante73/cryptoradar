@@ -31,12 +31,12 @@ export interface Universe {
   skipped: string[]; // top 100 sem par USDT em alguma das corretoras exigidas, ex: "KAS [sem Bybit]"
 }
 
-/** Corretoras exigidas, via EXCHANGES (padrão: binance,bybit). O par precisa existir em TODAS. */
+/** Corretoras exigidas, via EXCHANGES (padrão: binance; a Bybit fica para depois). O par precisa existir em TODAS. */
 export function requiredExchanges(): ExchangeName[] {
-  const list = (process.env.EXCHANGES || 'binance,bybit')
+  const list = (process.env.EXCHANGES || 'binance')
     .split(',').map((x) => x.trim().toLowerCase())
     .filter((x): x is ExchangeName => x === 'binance' || x === 'bybit');
-  return list.length > 0 ? Array.from(new Set(list)) : ['binance', 'bybit'];
+  return list.length > 0 ? Array.from(new Set(list)) : ['binance'];
 }
 
 /** Pares negociáveis na Bybit (API pública v5): spot ou perpétuos lineares (USDT). */

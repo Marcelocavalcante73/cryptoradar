@@ -118,7 +118,7 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
         <p className="text-sm text-amber-300 bg-[#161920] border border-[#23272f] rounded-xl p-3 leading-relaxed">
           {scanInfo?.lastError ? `Scanner com erro: ${scanInfo.lastError}. ` : ''}
           {futures
-            ? 'Os sinais de futuros dependem do servidor e da API de futuros da Binance e da Bybit; verifique se o servidor alcança essas APIs.'
+            ? 'Os sinais de futuros dependem do servidor e da API de futuros da Binance; verifique se o servidor alcança essas APIs.'
             : 'Os sinais abaixo são de exemplo e não refletem o mercado agora.'}
         </p>
       )}
