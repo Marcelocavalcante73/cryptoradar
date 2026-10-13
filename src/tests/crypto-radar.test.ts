@@ -46,6 +46,7 @@ import { runBacktest, computeStats, BacktestTrade } from '../services/backtest';
 import { buildUniverse as buildUniverseRaw, resolveFuturesSymbol, resetTop100Cache } from '../../server/universe';
 
 // Testes não gravam cache em disco, não esperam entre tentativas e partem sempre de cache vazio
+process.env.STATE_BACKEND = 'memory'; // testes não gravam no disco nem no Supabase
 process.env.UNIVERSE_CACHE = 'off';
 process.env.RETRY_BASE_MS = '1';
 const buildUniverse = (m?: 'spot' | 'futures') => { resetTop100Cache(); return buildUniverseRaw(m); };
@@ -60,6 +61,15 @@ import { detectTrendEntry, updateTrendSignal, canEnter, splitClosed, trendSignal
 import { runTrendBacktest, btcRegimeByDay, TREND_RULES } from '../services/trendBacktest';
 import { startBatchJob, getBatchJob } from '../../server/backtestJob';
 import { futuresKlines, futuresPrices, futuresSymbolsFrom, getFuturesProvider, resetFuturesProvider, toOkxInstrument } from '../../server/futuresData';
+import { getState, setState, stateBackend, storageInfo, storageHealth } from '../../server/stateStore';
+import { stateRead, stateWrite, validPaperAccount, checkAccess } from '../../server/stateApi';
+import os from 'os';
+import fs from 'fs';
+import path from 'path';
+import { decideSync, SyncQueue, pullState, pushState, accessKey, fetchStorageInfo } from '../services/remoteState';
+import { localStore } from '../services/localStore';
+import { runHealth, detectHost, DEFAULT_HOST } from '../../server/health';
+import { shouldServeStatic } from '../../server/runtime';
 import { runTrendScan, getTrendState, resetTrendState, formatTrendAlert } from '../../server/trendScanner';
 import { evaluateSignal, scoreCandles, MIN_SCORE } from '../services/signalEngine';
 import { StorageService, INITIAL_PAPER_ACCOUNT } from '../services/storageService';
@@ -1521,6 +1531,208 @@ console.log('\n--- Futuros: fontes alternativas ---');
   delete process.env.EXCHANGES;
   globalThis.fetch = realFetchF2;
   resetFuturesProvider();
+}
+
+// ============================================================================
+// ARMAZENAMENTO NO SERVIDOR: MEMÓRIA, ARQUIVO E SUPABASE; API COM CHAVE DE ACESSO
+// ============================================================================
+console.log('\n--- Armazenamento no servidor ---');
+{
+  // memória
+  await setState('k1', { a: 1 }, 100);
+  assert((await getState('k1'))?.value.a === 1 && (await getState('nao-existe')) === null, 'Memória: grava e lê; chave ausente devolve null');
+
+  // arquivo (em pasta temporária)
+  const cwd0 = process.cwd();
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cr-state-'));
+  process.chdir(tmp);
+  process.env.STATE_BACKEND = 'file';
+  await Promise.all([setState('a', { n: 1 }, 1), setState('b', { n: 2 }, 2), setState('c', { n: 3 }, 3)]);
+  const all = JSON.parse(fs.readFileSync(path.join(tmp, 'data', 'app-state.json'), 'utf8'));
+  assert(Object.keys(all).sort().join(',') === 'a,b,c', 'Arquivo: gravações simultâneas não se atropelam (todas as chaves ficam salvas)');
+  assert((await getState('b'))?.value.n === 2 && (await getState('b'))?.savedAt === 2, 'Arquivo: lê de volta o valor e a data');
+  assert((await storageHealth()).ok === true, 'Diagnóstico de armazenamento: ida e volta ok no arquivo');
+  assert(storageInfo().persistent === false, 'Arquivo sem PERSISTENT_DISK é marcado como não persistente (disco some ao reiniciar em hospedagens gratuitas)');
+  process.env.PERSISTENT_DISK = 'true';
+  assert(storageInfo().persistent === true, 'PERSISTENT_DISK=true marca o arquivo como persistente');
+  delete process.env.PERSISTENT_DISK;
+  process.chdir(cwd0);
+  fs.rmSync(tmp, { recursive: true, force: true });
+
+  // Supabase (simulado)
+  process.env.STATE_BACKEND = 'auto';
+  process.env.SUPABASE_URL = 'https://proj.supabase.co/';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-key';
+  assert(stateBackend() === 'supabase' && storageInfo().persistent === true, 'Com URL e chave do Supabase, o backend é supabase e persistente');
+  const realFetchS = globalThis.fetch;
+  const seen: { url: string; init?: any }[] = [];
+  const table = new Map<string, any>();
+  globalThis.fetch = ((url: any, init?: any) => {
+    const u = String(url);
+    seen.push({ url: u, init });
+    if (init?.method === 'POST') { const b = JSON.parse(init.body); table.set(b.key, { value: b.value, saved_at: b.saved_at }); return Promise.resolve(new Response(null, { status: 201 })); }
+    const key = decodeURIComponent(new URL(u).searchParams.get('key')!.replace('eq.', ''));
+    return Promise.resolve(new Response(JSON.stringify(table.has(key) ? [table.get(key)] : []), { status: 200 }));
+  }) as typeof fetch;
+  await setState('paper-spot', { virtualBalance: 5 }, 777);
+  const up = seen[0];
+  assert(up.url === 'https://proj.supabase.co/rest/v1/app_state?on_conflict=key' && up.init.headers.apikey === 'service-key' && up.init.headers.Authorization === 'Bearer service-key', 'Supabase: grava por upsert na tabela app_state com a chave de serviço');
+  assert(String(up.init.headers.Prefer).includes('merge-duplicates'), 'Supabase: upsert sobrescreve a linha existente');
+  const back = await getState('paper-spot');
+  assert(back?.value.virtualBalance === 5 && back?.savedAt === 777, 'Supabase: lê de volta valor e data');
+  assert((await getState('outra')) === null, 'Supabase: chave ausente devolve null');
+  globalThis.fetch = (() => Promise.resolve(new Response('err', { status: 500 }))) as typeof fetch;
+  let supaErr = '';
+  try { await setState('x', {}, 1); } catch (e: any) { supaErr = String(e?.message); }
+  assert(supaErr.includes('Supabase HTTP 500'), 'Supabase com erro: a gravação falha de forma explícita (o app não finge que salvou)');
+  assert((await storageHealth()).ok === false, 'Diagnóstico mostra o armazenamento com falha');
+  globalThis.fetch = realFetchS;
+  delete process.env.SUPABASE_URL; delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  process.env.STATE_BACKEND = 'memory';
+
+  // API do estado
+  const account = { virtualBalance: 9000, initialBalance: 10000, totalTrades: 1, winTrades: 0, lossTrades: 1, totalFeesPaid: 1, positions: [], closedHistory: [{ id: 'x' }] };
+  assert(validPaperAccount(account) && !validPaperAccount({ virtualBalance: 'x' }) && !validPaperAccount(null), 'Validação da carteira: aceita a estrutura certa e recusa lixo');
+  delete process.env.APP_ACCESS_KEY;
+  assert((await stateRead('paper-spot', undefined)).json.value === null, 'Sem dados salvos a leitura devolve valor nulo');
+  const w1 = await stateWrite('paper-spot', { value: account, savedAt: 1000 }, undefined);
+  assert(w1.status === 200, 'Grava a carteira');
+  const r1 = await stateRead('paper-spot', undefined);
+  assert((r1.json.value as any).virtualBalance === 9000 && r1.json.savedAt === 1000, 'Lê de volta a carteira gravada');
+  const stale = await stateWrite('paper-spot', { value: { ...account, virtualBalance: 1 }, savedAt: 500 }, undefined);
+  assert(stale.status === 409 && (stale.json.value as any).virtualBalance === 9000, 'Aparelho com dados velhos é recusado (409) e recebe a versão mais nova: nunca apaga o histórico de outro');
+  assert((await stateWrite('paper-spot', { value: { ...account, virtualBalance: 8000 }, savedAt: 2000 }, undefined)).status === 200 && ((await stateRead('paper-spot', undefined)).json.value as any).virtualBalance === 8000, 'Versão mais nova é aceita');
+  assert((await stateWrite('paper-spot', { value: { virtualBalance: 'x' }, savedAt: 3000 }, undefined)).status === 400, 'Carteira inválida é recusada (400)');
+  assert((await stateWrite('paper-spot', { value: account }, undefined)).status === 400, 'Sem data de gravação é recusado (400)');
+  assert((await stateRead('segredo', undefined)).status === 404 && (await stateWrite('segredo', { value: {}, savedAt: 1 }, undefined)).status === 404, 'Só as chaves conhecidas são aceitas');
+  assert((await stateWrite('paper-spot', { value: { ...account, positions: [{ blob: 'x'.repeat(2_100_000) }] }, savedAt: 4000 }, undefined)).status === 413, 'Estado grande demais é recusado (413)');
+  assert((await stateWrite('settings', { value: { realCapital: 100 }, savedAt: 1 }, undefined)).status === 200, 'Ajustes são gravados');
+
+  // chave de acesso
+  process.env.APP_ACCESS_KEY = 'minha-chave-123';
+  assert(storageInfo().keyRequired === true, 'Com APP_ACCESS_KEY o app informa que exige chave (sem revelar a chave)');
+  assert((await stateRead('paper-spot', undefined)).status === 401 && (await stateRead('paper-spot', 'errada')).status === 401, 'Sem a chave, ou com chave errada: 401');
+  assert((await stateWrite('paper-spot', { value: account, savedAt: 9000 }, 'errada')).status === 401, 'Gravar com chave errada: 401');
+  assert((await stateRead('paper-spot', 'minha-chave-123')).status === 200 && checkAccess('minha-chave-123').status === 200 && checkAccess('x').status === 401, 'Com a chave certa funciona');
+  delete process.env.APP_ACCESS_KEY;
+}
+
+// ============================================================================
+// SINCRONIZAÇÃO COM O SERVIDOR, ARMAZENAMENTO BLOQUEADO, DIAGNÓSTICO E MODO DE EXECUÇÃO
+// ============================================================================
+console.log('\n--- Sincronização e execução ---');
+{
+  // Qual cópia vale
+  assert(decideSync(0, null) === 'noop' && decideSync(5, null) === 'push-local', 'Servidor vazio: só envia se houver dado local');
+  assert(decideSync(100, { savedAt: 200, value: {} }) === 'use-remote', 'Servidor mais novo: usa a cópia do servidor');
+  assert(decideSync(300, { savedAt: 200, value: {} }) === 'push-local', 'Aparelho mais novo: envia a cópia local');
+  assert(decideSync(200, { savedAt: 200, value: {} }) === 'noop' && decideSync(0, { savedAt: 50, value: {} }) === 'use-remote', 'Iguais: nada a fazer; aparelho novo adota o servidor');
+
+  // Armazenamento local bloqueado (iframe do AI Studio / dados de site bloqueados): memória reserva em vez de perder tudo
+  const realLS = (globalThis as any).localStorage;
+  (globalThis as any).localStorage = { getItem() { throw new Error('SecurityError'); }, setItem() { throw new Error('SecurityError'); }, removeItem() { throw new Error('SecurityError'); } };
+  assert(localStore.set('k', 'v') === false && localStore.get('k') === 'v', 'Armazenamento bloqueado: guarda em memória e devolve o valor (antes perdia tudo em silêncio)');
+  assert(localStore.isBlocked() === true, 'O app sabe que o navegador está bloqueando o armazenamento');
+  (globalThis as any).localStorage = realLS;
+
+  // Cliente de sincronização com o servidor simulado
+  const realFetchY = globalThis.fetch;
+  const server = new Map<string, { value: any; savedAt: number }>();
+  let online = true, requireKey: string | null = null;
+  const calls: { url: string; method: string; key?: string }[] = [];
+  globalThis.fetch = ((url: any, init?: any) => {
+    const u = String(url);
+    const method = init?.method || 'GET';
+    const key = init?.headers?.['X-Access-Key'];
+    calls.push({ url: u, method, key });
+    if (!online) return Promise.reject(new Error('offline'));
+    const json = (st: number, b: unknown) => Promise.resolve(new Response(JSON.stringify(b), { status: st }));
+    if (u.endsWith('/api/storage')) return json(200, { backend: 'supabase', persistent: true, keyRequired: !!requireKey });
+    if (requireKey && key !== requireKey) return json(401, { error: 'x' });
+    const k = u.split('/api/state/')[1];
+    if (method === 'PUT') {
+      const b = JSON.parse(init.body);
+      const cur = server.get(k);
+      if (cur && cur.savedAt > b.savedAt) return json(409, { value: cur.value, savedAt: cur.savedAt });
+      server.set(k, b);
+      return json(200, { ok: true });
+    }
+    const cur = server.get(k);
+    return json(200, { value: cur?.value ?? null, savedAt: cur?.savedAt ?? 0 });
+  }) as typeof fetch;
+
+  assert((await fetchStorageInfo())?.backend === 'supabase', 'Lê como o servidor guarda os dados');
+  assert((await pushState('paper-spot', { v: 1 }, 100)).kind === 'ok' && ((await pullState('paper-spot')) as any).savedAt === 100, 'Grava e lê do servidor');
+  const conf = await pushState('paper-spot', { v: 0 }, 50);
+  assert(conf.kind === 'conflict' && (conf as any).value.v === 1, 'Aparelho com dados velhos recebe a versão mais nova (conflito), sem apagar nada');
+
+  const statuses: string[] = [];
+  const conflicts: any[] = [];
+  const q = new SyncQueue((st) => statuses.push(st), (key, value, at) => conflicts.push({ key, value, at }), 5);
+  q.enqueue('paper-futures', { n: 1 }, 10);
+  q.enqueue('paper-futures', { n: 2 }, 11); // duas alterações seguidas viram uma gravação
+  await new Promise((r) => setTimeout(r, 60));
+  const puts = calls.filter((c) => c.method === 'PUT' && c.url.endsWith('paper-futures'));
+  assert(puts.length === 1 && server.get('paper-futures')?.value.n === 2 && q.status === 'saved', 'Várias alterações seguidas viram uma só gravação e o status vira "salvo"');
+
+  online = false;
+  q.enqueue('settings', { a: 1 }, 20);
+  await q.flush();
+  assert(q.status === 'offline' && q.hasPending(), 'Sem conexão: status "offline" e a alteração fica pendente');
+  online = true;
+  await q.flush();
+  assert(q.status === 'saved' && !q.hasPending() && server.get('settings')?.value.a === 1, 'Conexão volta: a alteração pendente é enviada');
+  q.dispose();
+
+  const q2 = new SyncQueue(() => undefined, (key, value, at) => conflicts.push({ key, value, at }), 5);
+  q2.enqueue('paper-spot', { v: 99 }, 10); // mais velho que o do servidor (100)
+  await q2.flush();
+  assert(conflicts.length === 1 && conflicts[0].value.v === 1 && !q2.hasPending(), 'Conflito: avisa o app para adotar a versão do servidor e descarta a gravação velha');
+  q2.dispose();
+
+  // Chave de acesso
+  requireKey = 'segredo';
+  accessKey.set('errada');
+  assert((await pullState('paper-spot')).kind === 'locked', 'Servidor exige chave: sem a certa o app fica "trancado"');
+  accessKey.set('segredo');
+  assert((await pullState('paper-spot')).kind === 'ok', 'Com a chave certa lê normalmente');
+  const q3 = new SyncQueue(() => undefined, () => undefined, 5);
+  accessKey.set('errada');
+  q3.enqueue('paper-spot', { v: 1 }, 999);
+  await q3.flush();
+  assert(q3.status === 'locked', 'Gravar com chave errada deixa o status "trancado"');
+  q3.dispose();
+  accessKey.clear();
+  globalThis.fetch = realFetchY;
+
+  // Diagnóstico
+  assert(detectHost({ K_SERVICE: 'x' } as any).startsWith('Google Cloud Run') && detectHost({ RENDER: 'true' } as any) === 'Render' && detectHost({} as any) === DEFAULT_HOST, 'Detecta a hospedagem (Cloud Run, Render ou servidor próprio)');
+  const realFetchH = globalThis.fetch;
+  globalThis.fetch = ((url: any) => {
+    const u = String(url);
+    const j = (st: number, b: unknown) => Promise.resolve(new Response(JSON.stringify(b), { status: st }));
+    if (u.includes('fapi.binance.com')) return j(451, {});
+    if (u.includes('bybit.com')) return j(200, { retCode: 0 });
+    if (u.includes('okx.com')) return j(200, { code: '0' });
+    if (u.includes('coingecko')) return j(429, {});
+    return j(200, {});
+  }) as typeof fetch;
+  const rep = await runHealth();
+  const byId = Object.fromEntries(rep.checks.map((c) => [c.id, c]));
+  assert(byId['binance-futures'].ok === false && byId['binance-futures'].detail!.includes('451') && byId['binance-futures'].detail!.includes('bloqueada'), 'Diagnóstico explica o 451 da Binance como bloqueio de região');
+  assert(byId['bybit'].ok && byId['okx'].ok && byId['binance-spot'].ok && byId['storage'].ok, 'Diagnóstico marca ok o que responde, inclusive o armazenamento');
+  assert(byId['coingecko'].detail!.includes('limite'), 'Diagnóstico explica o 429 como limite de requisições');
+  assert(rep.warnings.some((w) => w.includes('Binance de futuros não responde')) && rep.warnings.some((w) => w.includes('chave de acesso')), 'Avisos: Binance de futuros fora (usa Bybit/OKX) e app sem chave de acesso');
+  globalThis.fetch = (() => Promise.resolve(new Response('', { status: 451 }))) as typeof fetch;
+  const rep2 = await runHealth();
+  assert(rep2.warnings.some((w) => w.includes('Mude a região')), 'Todas as corretoras bloqueadas: aviso claro para mudar a região da hospedagem');
+  globalThis.fetch = realFetchH;
+
+  // Modo de execução (igual em qualquer lugar)
+  assert(shouldServeStatic({ NODE_ENV: 'production' } as any, [], true) === true, 'NODE_ENV=production serve o app compilado');
+  assert(shouldServeStatic({ NODE_ENV: 'production' } as any, ['--dev'], true) === false && shouldServeStatic({ NODE_ENV: 'development', K_SERVICE: 'x' } as any, [], true) === false, 'npm run dev (--dev) e NODE_ENV=development usam o modo de desenvolvimento');
+  assert(shouldServeStatic({ K_SERVICE: 'x' } as any, [], true) === true && shouldServeStatic({ RENDER: 'true' } as any, [], true) === true, 'Em hospedagem conhecida, sem NODE_ENV, serve o compilado se existir dist/');
+  assert(shouldServeStatic({} as any, [], true) === false && shouldServeStatic({ RENDER: 'true' } as any, [], false) === false, 'Máquina própria não serve um dist/ antigo por engano; sem dist/ não há o que servir');
 }
 
 console.log('\n========================================================');

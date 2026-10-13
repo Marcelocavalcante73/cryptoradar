@@ -4,8 +4,7 @@
  * Cada moeda é cruzada com os pares USDT existentes na Binance; as que não existem lá são listadas em `skipped`.
  */
 
-import fs from 'fs';
-import path from 'path';
+import { getStateSafe, setStateSafe } from './stateStore';
 import { MarketType } from '../src/types/crypto';
 import { futuresSymbolsFrom } from './futuresData';
 
@@ -91,26 +90,20 @@ export function resetTop100Cache() {
   top100InFlight = null;
 }
 
-function cacheFile(): string | null {
-  return process.env.UNIVERSE_CACHE === 'off' ? null : path.resolve(process.cwd(), 'data', 'top100.json');
+function cacheOff(): boolean {
+  return process.env.UNIVERSE_CACHE === 'off';
 }
 
-function readDiskCache(): Top100 | null {
-  const f = cacheFile();
-  if (!f) return null;
-  try {
-    const c = JSON.parse(fs.readFileSync(f, 'utf8'));
-    return Array.isArray(c?.items) && c.items.length > 0 ? c : null;
-  } catch { return null; }
+async function readDiskCache(): Promise<Top100 | null> {
+  if (cacheOff()) return null;
+  const rec = await getStateSafe('top100');
+  const c = rec?.value;
+  return Array.isArray(c?.items) && c.items.length > 0 ? c : null;
 }
 
 function writeDiskCache(c: Top100) {
-  const f = cacheFile();
-  if (!f) return;
-  try {
-    fs.mkdirSync(path.dirname(f), { recursive: true });
-    fs.writeFileSync(f, JSON.stringify(c));
-  } catch { /* sem disco gravável: segue só com o cache em memória */ }
+  if (cacheOff()) return;
+  void setStateSafe('top100', c);
 }
 
 /** GET com novas tentativas em 429 (limite) e 5xx, respeitando Retry-After. */
@@ -192,7 +185,7 @@ async function fetchTop100(): Promise<Top100> {
   if (top100InFlight) return top100InFlight;
 
   top100InFlight = (async () => {
-    const disk = top100Cache ?? readDiskCache();
+    const disk = top100Cache ?? (await readDiskCache());
     // Cache em disco ainda fresco (ex: reinício do servidor): nem consulta a rede
     if (disk && Date.now() - disk.fetchedAt < TOP_TTL_MS) {
       top100Cache = { ...disk, stale: false };
