@@ -262,11 +262,19 @@ app.get('/api/backtest', async (req: Request, res: Response) => {
   try {
     const market = parseMarket(req.query.market);
     const candles = await fetchHistory(symbol, tf, bars, 1, market);
-    // Spot: só compras. Futuros: compras e vendas, com funding conservador de 0,01% por 8h
+    // Spot: só compras. Futuros: compras e vendas, com o funding atual da Binance (fallback 0,01% por 8h)
+    let funding = 0.0001;
+    if (market === 'futures') {
+      try {
+        const pi = await binanceGet(`/fapi/v1/premiumIndex?symbol=${symbol}`, 5000, 'futures');
+        const r = Math.abs(Number(pi?.lastFundingRate));
+        if (Number.isFinite(r) && r > 0) funding = r; // módulo: custo conservador nos dois lados
+      } catch { /* mantém o padrão */ }
+    }
     const longOnly = market === 'spot' && req.query.both !== 'true';
     const result = runBacktest(candles, symbol, symbol.replace(/USDT$/, ''), tf, {
       longOnly,
-      fundingPer8h: market === 'futures' ? 0.0001 : 0
+      fundingPer8h: market === 'futures' ? funding : 0
     });
     res.json({ ...result, trades: result.trades.slice(-100) });
   } catch (e: any) {
