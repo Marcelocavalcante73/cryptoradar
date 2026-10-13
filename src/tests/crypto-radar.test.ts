@@ -43,7 +43,12 @@ import {
 
 import { calculateAllIndicators, calculateATR } from '../services/indicators';
 import { runBacktest, computeStats, BacktestTrade } from '../services/backtest';
-import { buildUniverse, resolveFuturesSymbol } from '../../server/universe';
+import { buildUniverse as buildUniverseRaw, resolveFuturesSymbol, resetTop100Cache } from '../../server/universe';
+
+// Testes não gravam cache em disco, não esperam entre tentativas e partem sempre de cache vazio
+process.env.UNIVERSE_CACHE = 'off';
+process.env.RETRY_BASE_MS = '1';
+const buildUniverse = (m?: 'spot' | 'futures') => { resetTop100Cache(); return buildUniverseRaw(m); };
 import { formatTelegramAlert } from '../../server/scanner';
 import { computeSignalPerformance, signalResultR, evaluateReadiness, PerfSignal } from '../services/signalPerformance';
 import { suggestAmount } from '../components/paperTrading/TradeSheet';
@@ -1022,6 +1027,60 @@ if (sell && buy) {
   assert(longMsg.startsWith('[FUTUROS]') && longMsg.includes('long') && longMsg.includes('Alavancagem máx. segura'), 'Alerta de futuros: etiqueta, long e alavancagem segura');
   assert(shortMsg.includes('short') && shortMsg.includes('Stop:') && !shortMsg.includes('sair da posição'), 'Alerta de short em futuros traz alvo e stop (não é "sair da posição")');
   assert(formatTelegramAlert(buy, 'spot').startsWith('[SPOT]'), 'Alerta de spot leva a etiqueta [SPOT]');
+}
+
+// ============================================================================
+// RANKING TOP 100: LIMITE DE REQUISIÇÕES (429), FONTE ALTERNATIVA E CACHE
+// ============================================================================
+console.log('\n--- Ranking: 429, fallback e cache ---');
+{
+  const realFetchR = globalThis.fetch;
+  const jsonR = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  const calls = { gecko: 0, paprika: 0 };
+  const mount = (geckoStatus: number, paprikaOk: boolean) => {
+    globalThis.fetch = ((url: any) => {
+      const u = String(url);
+      if (u.includes('coingecko')) {
+        calls.gecko++;
+        return geckoStatus === 200
+          ? jsonR(Array.from({ length: 12 }, (_, i) => ({ symbol: i === 0 ? 'btc' : `c${i}`, name: `C${i}`, market_cap_rank: i + 1, market_cap: 1e9 })))
+          : Promise.resolve(new Response('limit', { status: geckoStatus }));
+      }
+      if (u.includes('coinpaprika')) {
+        calls.paprika++;
+        return paprikaOk
+          ? jsonR([
+              { symbol: 'BTC', name: 'Bitcoin', rank: 1, quotes: { USD: { market_cap: 1e12 } } },
+              ...Array.from({ length: 12 }, (_, i) => ({ symbol: `P${i}`, name: `P${i}`, rank: i + 2, quotes: { USD: { market_cap: 1e9 } } })),
+              { symbol: 'BTC', name: 'Wrapped BTC fake', rank: 20, quotes: { USD: { market_cap: 1e6 } } }
+            ])
+          : Promise.resolve(new Response('down', { status: 500 }));
+      }
+      if (u.includes('/api/v3/ticker/price')) return jsonR([{ symbol: 'BTCUSDT', price: '1' }, { symbol: 'P1USDT', price: '1' }, { symbol: 'C1USDT', price: '1' }]);
+      if (u.includes('bybit.com')) return jsonR({ retCode: 0, result: { list: [{ symbol: 'BTCUSDT' }, { symbol: 'P1USDT' }, { symbol: 'C1USDT' }] } });
+      return Promise.reject(new Error('url inesperada: ' + u));
+    }) as typeof fetch;
+  };
+
+  mount(429, true);
+  const viaPaprika = await buildUniverse('spot');
+  assert(calls.gecko === 3, 'CoinGecko com 429: tenta 3 vezes antes de desistir', String(calls.gecko));
+  assert(viaPaprika.source === 'COINPAPRIKA' && viaPaprika.coins.some((c) => c.symbol === 'P1USDT'), 'Com CoinGecko limitado, usa a CoinPaprika como fonte alternativa');
+  assert(viaPaprika.coins.filter((c) => c.baseAsset === 'BTC').length === 1, 'Símbolo repetido na CoinPaprika entra uma vez só (mantém o de melhor ranking)');
+
+  mount(200, true);
+  calls.gecko = 0;
+  resetTop100Cache();
+  const first = await buildUniverseRaw('spot');
+  const second = await buildUniverseRaw('futures').catch(() => null); // futuros falha por não haver mock; importa só que o ranking veio do cache
+  void second;
+  assert(first.source === 'COINGECKO' && calls.gecko === 1, 'Ranking é buscado uma vez e reaproveitado pelo outro mercado (cache compartilhado)', String(calls.gecko));
+
+  mount(429, false);
+  let allFailed = '';
+  try { await buildUniverse('spot'); } catch (e: any) { allFailed = String(e?.message); }
+  assert(allFailed.includes('CoinGecko') && allFailed.includes('CoinPaprika') && allFailed.includes('HTTP 429'), 'Todas as fontes falhando: erro claro com o motivo de cada uma');
+  globalThis.fetch = realFetchR;
 }
 
 console.log('\n========================================================');
