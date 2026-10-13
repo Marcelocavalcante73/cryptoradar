@@ -55,6 +55,8 @@ import { suggestAmount } from '../components/paperTrading/TradeSheet';
 import { historyToCsv } from '../components/paperTrading/WalletView';
 import { liquidationPrice, stopBeforeLiquidation, maxSafeLeverage, futuresSizing } from '../services/futures';
 import { positionUnrealizedPnl } from '../services/paperTradingService';
+import { summarizeBatch } from '../services/backtestBatch';
+import { startBatchJob, getBatchJob } from '../../server/backtestJob';
 import { evaluateSignal, scoreCandles, MIN_SCORE } from '../services/signalEngine';
 import { StorageService, INITIAL_PAPER_ACCOUNT } from '../services/storageService';
 import { CandleData, CryptoAsset, PaperAccount } from '../types/crypto';
@@ -1081,6 +1083,76 @@ console.log('\n--- Ranking: 429, fallback e cache ---');
   try { await buildUniverse('spot'); } catch (e: any) { allFailed = String(e?.message); }
   assert(allFailed.includes('CoinGecko') && allFailed.includes('CoinPaprika') && allFailed.includes('HTTP 429'), 'Todas as fontes falhando: erro claro com o motivo de cada uma');
   globalThis.fetch = realFetchR;
+}
+
+// ============================================================================
+// BACKTEST EM LOTE: AGREGADO, METADES DO PERÍODO E VEREDITO
+// ============================================================================
+console.log('\n--- Backtest em lote ---');
+{
+  const trade = (netPct: number, entryIndex: number): BacktestTrade => ({
+    symbol: 'X', timeframe: '1h', direction: 'LONG', score: 70, entryIndex, exitIndex: entryIndex + 1, entryPrice: 1, exitPrice: 1,
+    exit: netPct > 0 ? 'TARGET' : 'STOP', grossPct: netPct, netPct, rMultiple: netPct / 2
+  });
+  const result = (symbol: string, trades: BacktestTrade[]): any => ({ symbol, timeframe: '1h', candlesUsed: 1000, trades, stats: computeStats(trades) });
+
+  // 120 operações: em cada metade, 2 ganhos de +3 para cada perda de -1,5 (fator de lucro 2,0)
+  const mkSet = (offset: number) => Array.from({ length: 30 }, (_, i) => trade(i % 3 === 2 ? -1.5 : 3, offset + i * 10));
+  const good = summarizeBatch([
+    result('AAAUSDT', [...mkSet(0), ...mkSet(500)]),
+    result('BBBUSDT', [...mkSet(5), ...mkSet(505)])
+  ]);
+  assert(good.aggregate.trades === 120 && good.firstHalf.trades === 60 && good.secondHalf.trades === 60, 'Agregado soma as moedas e divide as operações pelas duas metades do período');
+  assert(good.rows.length === 2 && good.rows[0].symbol === 'AAAUSDT', 'Tabela por moeda');
+  assert(good.passed && good.checks.every((c) => c.ok), 'Fator 2,0 em todo o período e nas duas metades, 120 operações => aprovado');
+
+  // Bom na primeira metade e ruim na segunda: média geral pode enganar, a metade reprova
+  const early = Array.from({ length: 60 }, (_, i) => trade(i % 3 === 2 ? -1 : 4, i * 5));            // ganha bastante
+  const late = Array.from({ length: 60 }, (_, i) => trade(i % 3 === 0 ? 1 : -1.5, 500 + i * 5));    // perde
+  const split = summarizeBatch([result('CCCUSDT', [...early, ...late])]);
+  assert(split.checks[3].ok && !split.checks[4].ok && !split.passed, 'Resultado bom só na primeira metade => reprovado pela checagem da segunda metade');
+
+  const few = summarizeBatch([result('DDDUSDT', mkSet(0))]);
+  assert(!few.checks[0].ok && !few.passed, 'Poucas operações (30) => reprovado');
+
+  const losing = summarizeBatch([result('EEEUSDT', Array.from({ length: 150 }, (_, i) => trade(i % 3 === 0 ? 1 : -1, i * 6)))]);
+  assert(!losing.passed && !losing.checks[1].ok && !losing.checks[2].ok, 'Fator de lucro < 1,3 e expectativa negativa => reprovado');
+  assert(summarizeBatch([]).aggregate.trades === 0 && !summarizeBatch([]).passed, 'Sem resultados não quebra e não aprova');
+}
+
+// Trabalho em segundo plano ponta a ponta, com corretoras simuladas
+{
+  const realFetchJ = globalThis.fetch;
+  const jsonJ = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  const coinsJ = ['AAA', 'BBB', 'CCC', 'DDD', 'EEE'];
+  globalThis.fetch = ((url: any) => {
+    const u = String(url);
+    if (u.includes('coingecko')) return jsonJ(coinsJ.map((c, i) => ({ symbol: c.toLowerCase(), name: c, market_cap_rank: i + 1, market_cap: 1e9 })));
+    if (u.includes('/api/v3/ticker/price')) return jsonJ(coinsJ.map((c) => ({ symbol: `${c}USDT`, price: '100' })));
+    if (u.includes('bybit.com')) return jsonJ({ retCode: 0, result: { list: coinsJ.map((c) => ({ symbol: `${c}USDT` })) } });
+    if (u.includes('/api/v3/klines')) {
+      const limit = Number(new URL(u).searchParams.get('limit') || 500);
+      const seedStr = new URL(u).searchParams.get('symbol') || 'X';
+      let seed = Array.from(seedStr).reduce((a, ch) => a + ch.charCodeAt(0), 7);
+      const rnd = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296 - 0.5; };
+      let p = 100;
+      return jsonJ(Array.from({ length: limit }, (_, i) => {
+        const o = p; p *= 1 + 0.0015 + rnd() * 0.02;
+        return [1_700_000_000_000 + i * 3_600_000, String(o), String(Math.max(o, p) * 1.004), String(Math.min(o, p) * 0.996), String(p), '1000', 0, '0', 0, '0', '0', '0'];
+      }));
+    }
+    return Promise.reject(new Error('url inesperada: ' + u));
+  }) as typeof fetch;
+  resetTop100Cache();
+  const job = startBatchJob({ market: 'spot', tf: '1h', top: 5, bars: 1000 });
+  assert(job.status === 'running', 'Backtest em lote começa em segundo plano');
+  assert(startBatchJob({ market: 'futures', tf: '4h', top: 5, bars: 1000 }).id === job.id, 'Enquanto um backtest roda, outro pedido devolve o mesmo trabalho (um por vez)');
+  for (let i = 0; i < 400 && getBatchJob()?.status === 'running'; i++) await new Promise((r) => setTimeout(r, 50));
+  const done = getBatchJob()!;
+  assert(done.status === 'done' && done.done === 5 && done.total === 5, 'Trabalho termina com as 5 moedas testadas', `${done.status} ${done.done}/${done.total} ${done.error ?? ''}`);
+  assert(done.summary!.rows.length === 5 && done.summary!.checks.length === 5, 'Resultado traz tabela por moeda e os 5 critérios');
+  assert(done.summary!.aggregate.shortTrades === 0, 'Spot no lote: nenhuma operação vendida');
+  globalThis.fetch = realFetchJ;
 }
 
 console.log('\n========================================================');

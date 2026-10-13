@@ -42,6 +42,8 @@ O app tem dois modos, escolhidos no seletor **Spot | Futuros** (cada um com seus
 
 ## Backtest
 
+No app: **Ajustes → Abrir backtest**. Escolha mercado, tempo de vela e quantidade de moedas; o servidor roda em segundo plano e mostra o veredito contra os critérios (100+ operações, fator de lucro 1,3+, média positiva e as duas metades do período com fator 1,0+). Também por linha de comando:
+
 ```bash
 npm run backtest -- --tf 1h --top 30 --bars 2000                 # spot (só compras)
 npm run backtest -- --tf 1h --top 30 --bars 2000 --market futures  # futuros (long e short, com funding)

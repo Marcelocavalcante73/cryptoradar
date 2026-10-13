@@ -1,7 +1,7 @@
 import React from 'react';
 import { Radio, Wallet, TrendingUp } from 'lucide-react';
 
-export type ScreenTab = 'signals' | 'wallet' | 'market' | 'settings' | 'details';
+export type ScreenTab = 'signals' | 'wallet' | 'market' | 'settings' | 'details' | 'backtest';
 
 interface BottomNavProps {
   activeTab: ScreenTab;

@@ -10,12 +10,13 @@ interface SettingsViewProps {
   scanInfos: Record<MarketType, ScanInfo | null>;
   onSaveSettings: (settings: AppSettings) => void;
   onBack: () => void;
+  onOpenBacktest: () => void;
 }
 
 const card = 'bg-[#161920] border border-[#23272f] rounded-xl p-4';
 const input = 'bg-[#0f1115] border border-[#2a2f3a] rounded-lg px-3 py-2.5 text-base text-slate-100 w-24 text-right tabular-nums focus:outline-none focus:border-slate-400';
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ settings, scanInfos, onSaveSettings, onBack }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({ settings, scanInfos, onSaveSettings, onBack, onOpenBacktest }) => {
   const [tg, setTg] = useState<(TelegramBackendStatus & { chatConfigured?: boolean }) | null>(null);
   const [tgMsg, setTgMsg] = useState<string | null>(null);
   const [tgBusy, setTgBusy] = useState(false);
@@ -45,6 +46,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, scanInfos,
         <h2 className="text-lg font-semibold text-slate-100">Ajustes</h2>
         <button onClick={onBack} className="text-sm text-slate-300 underline underline-offset-4">Voltar</button>
       </div>
+
+      <section className={card}>
+        <h3 className="text-sm font-medium text-slate-300 mb-1">Backtest</h3>
+        <p className="text-xs text-slate-500 leading-relaxed mb-3">
+          Testa a estratégia no histórico real das maiores moedas e diz se ela passa nos critérios antes de você simular ao vivo.
+        </p>
+        <button onClick={onOpenBacktest} className="border border-[#2a2f3a] text-slate-200 px-4 py-2.5 rounded-lg">Abrir backtest</button>
+      </section>
 
       <section className={card}>
         <h3 className="text-sm font-medium text-slate-300 mb-1">Simulação</h3>

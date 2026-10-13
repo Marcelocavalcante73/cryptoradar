@@ -7,6 +7,7 @@ import { getScanState, runScan, startScanner, parseMarket } from './server/scann
 import { fetchHistory } from './server/history';
 import { runBacktest } from './src/services/backtest';
 import { binanceGet } from './server/universe';
+import { getBatchJob, startBatchJob } from './server/backtestJob';
 
 dotenv.config();
 
@@ -280,6 +281,25 @@ app.get('/api/backtest', async (req: Request, res: Response) => {
   } catch (e: any) {
     res.status(502).json({ error: `Falha ao obter histórico da Binance: ${e?.message ?? 'indisponível'}` });
   }
+});
+
+/**
+ * POST /api/backtest/batch {market, tf, top, bars} — inicia o backtest de várias moedas em segundo plano.
+ * GET  /api/backtest/batch — andamento e resultado do último backtest em lote.
+ */
+app.post('/api/backtest/batch', (req: Request, res: Response) => {
+  const ip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1';
+  if (isRateLimited(ip)) return res.status(429).json({ error: 'Limite de requisições excedido.' });
+  const b = req.body || {};
+  const tf = b.tf === '4h' ? '4h' : '1h';
+  const top = Math.min(50, Math.max(5, Math.round(Number(b.top) || 30)));
+  const bars = Math.min(4000, Math.max(500, Math.round(Number(b.bars) || 3000)));
+  const job = startBatchJob({ market: parseMarket(b.market), tf, top, bars });
+  res.status(202).json(job);
+});
+
+app.get('/api/backtest/batch', (_req: Request, res: Response) => {
+  res.json(getBatchJob());
 });
 
 /**

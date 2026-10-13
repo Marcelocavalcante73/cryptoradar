@@ -18,6 +18,7 @@ import { CoinDetailsView } from './components/details/CoinDetailsView';
 import { WalletView } from './components/paperTrading/WalletView';
 import { SignalsView, ScanInfo } from './components/signals/SignalsView';
 import { SettingsView } from './components/settings/SettingsView';
+import { BacktestView } from './components/backtest/BacktestView';
 import { TradeSheet, TradeRequest } from './components/paperTrading/TradeSheet';
 
 const MARKETS: MarketType[] = ['spot', 'futures'];
@@ -348,8 +349,10 @@ export default function App() {
             <CoinDetailsView asset={selectedCoin} market={detailsMarket} signals={signalsBy[detailsMarket]} onBack={() => goTo(backTab)} onOpenTradeModal={(asset) => openTrade(detailsMarket, asset)} />
           )}
 
+          {activeTab === 'backtest' && <BacktestView onBack={() => goTo('settings')} />}
+
           {activeTab === 'settings' && (
-            <SettingsView settings={settings} scanInfos={scanInfos} onSaveSettings={handleSaveSettings} onBack={() => goTo('signals')} />
+            <SettingsView settings={settings} scanInfos={scanInfos} onSaveSettings={handleSaveSettings} onBack={() => goTo('signals')} onOpenBacktest={() => goTo('backtest')} />
           )}
         </main>
 
