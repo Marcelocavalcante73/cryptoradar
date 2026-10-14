@@ -12,7 +12,7 @@ import { soundService } from './services/soundService';
 import { DEFAULT_FUTURES_LEVERAGE } from './services/futures';
 
 import { Header } from './components/layout/Header';
-import { BottomNav, ScreenTab } from './components/layout/BottomNav';
+import { BottomNav, ScreenTab, AppSection } from './components/layout/BottomNav';
 import { MarketView } from './components/market/MarketView';
 import { CoinDetailsView } from './components/details/CoinDetailsView';
 import { WalletView } from './components/paperTrading/WalletView';
@@ -20,6 +20,7 @@ import { SignalsView, ScanInfo } from './components/signals/SignalsView';
 import { SettingsView } from './components/settings/SettingsView';
 import { BacktestView } from './components/backtest/BacktestView';
 import { TrendView, TrendInfo } from './components/trend/TrendView';
+import { B3Info, B3SignalsView, B3TrendView, B3TrackView } from './components/b3/B3Views';
 import { TrendSignal } from './services/trendSignals';
 import { AccessGate } from './components/common/AccessGate';
 import { localStore } from './services/localStore';
@@ -41,7 +42,7 @@ function futuresAsset(symbol: string, price: number): CryptoAsset {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<ScreenTab>('signals');
+  const [activeTab, setActiveTab] = useState<ScreenTab>(() => (localStore.get('cryptoradar_section') === 'b3' ? 'b3signals' : 'signals'));
   const [market, setMarket] = useState<MarketType>(() => StorageService.getMarket());
   const [assets, setAssets] = useState<CryptoAsset[]>(INITIAL_ASSETS);
   const [futuresAssets, setFuturesAssets] = useState<CryptoAsset[]>([]);
@@ -52,6 +53,8 @@ export default function App() {
   const [backTab, setBackTab] = useState<ScreenTab>('market');
   const [trade, setTrade] = useState<{ market: MarketType; asset: CryptoAsset; signal?: TechnicalSignal; noTarget?: boolean } | null>(null);
   const [trend, setTrend] = useState<TrendInfo | null>(null);
+  const [b3, setB3] = useState<B3Info | null>(null);
+  const [section, setSection] = useState<AppSection>(() => (localStore.get('cryptoradar_section') === 'b3' ? 'b3' : 'crypto'));
 
   const [accounts, setAccounts] = useState<Record<MarketType, PaperAccount>>(() => ({
     spot: StorageService.getPaperAccount('spot'),
@@ -309,6 +312,39 @@ export default function App() {
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, []);
 
+  // Scanner da B3 (swing trade): só consulta enquanto a seção B3 está aberta
+  useEffect(() => {
+    if (section !== 'b3') return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const loop = async () => {
+      let running = false;
+      try {
+        const r = await fetch('/api/b3?wait=1', { signal: AbortSignal.timeout(35000) });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const j: B3Info = await r.json();
+        if (cancelled) return;
+        setB3(j);
+        running = Boolean(j.running);
+      } catch {
+        if (!cancelled) setB3(null);
+      }
+      if (!cancelled) timer = setTimeout(() => { void loop(); }, running ? 1000 : 60000);
+    };
+    void loop();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [section]);
+
+  const changeSection = (next: AppSection) => {
+    setSection(next);
+    localStore.set('cryptoradar_section', next);
+    goTo(next === 'b3' ? 'b3signals' : 'signals');
+  };
+
+  const refreshB3 = async () => {
+    try { await fetch('/api/b3/scan', { method: 'POST' }); const r = await fetch('/api/b3?wait=1', { signal: AbortSignal.timeout(35000) }); setB3(await r.json()); } catch { /* tenta de novo no próximo ciclo */ }
+  };
+
   const trendCount = trend?.watch?.length ?? 0;
   useEffect(() => {
     if (trendCount > 0) refreshPrices();
@@ -427,6 +463,8 @@ export default function App() {
   const openSignals = signals.filter((s) => s.status === 'OPEN').length;
   const openSignalsBy = (m: MarketType) => signalsBy[m].filter((s) => s.status === 'OPEN').length;
   const showSwitch = activeTab === 'signals' || activeTab === 'wallet';
+  const showSection = activeTab !== 'details' && activeTab !== 'settings' && activeTab !== 'backtest';
+  const isB3 = section === 'b3';
 
   if (locked) return <AccessGate onUnlocked={() => { void reconcile(); }} />;
 
@@ -434,15 +472,33 @@ export default function App() {
     <div className="min-h-screen bg-[#0f1115] text-slate-100 flex justify-center">
       <div className="w-full max-w-2xl min-h-screen flex flex-col">
         <Header
-          isLive={market === 'futures' ? Boolean(scanInfos.futures?.lastScanAt && !scanInfos.futures.lastError) : isLive}
-          isDemoData={market === 'spot' && isDemoMode}
-          isFetching={isFetching}
-          onRefresh={refreshPrices}
+          isLive={isB3 ? Boolean(b3?.lastScanAt && !b3.lastError) : market === 'futures' ? Boolean(scanInfos.futures?.lastScanAt && !scanInfos.futures.lastError) : isLive}
+          isDemoData={!isB3 && market === 'spot' && isDemoMode}
+          isFetching={isB3 ? Boolean(b3?.running) : isFetching}
+          onRefresh={isB3 ? refreshB3 : refreshPrices}
           onOpenSettings={() => goTo('settings')}
         />
 
         <main className="flex-1 px-4 pt-4">
-          {showSwitch && (
+          {showSection && (
+            <div className="grid grid-cols-2 gap-1 bg-[#161920] border border-[#23272f] rounded-xl p-1 mb-3">
+              {(['crypto', 'b3'] as AppSection[]).map((sec) => (
+                <button
+                  key={sec}
+                  onClick={() => changeSection(sec)}
+                  className={`py-2.5 rounded-lg text-sm font-semibold ${section === sec ? 'bg-slate-100 text-slate-900' : 'text-slate-400'}`}
+                >
+                  {sec === 'crypto' ? 'Cripto' : 'B3'}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {isB3 && activeTab === 'b3signals' && <B3SignalsView info={b3} capital={settings.b3Capital ?? 0} riskPercent={settings.realRiskPercent ?? 1} />}
+          {isB3 && activeTab === 'b3trend' && <B3TrendView info={b3} capital={settings.b3Capital ?? 0} riskPercent={settings.realRiskPercent ?? 1} />}
+          {isB3 && activeTab === 'b3track' && <B3TrackView info={b3} onOpenBacktest={() => goTo('backtest')} />}
+
+          {showSwitch && !isB3 && (
             <div className="grid grid-cols-2 gap-1 bg-[#161920] border border-[#23272f] rounded-xl p-1 mb-4">
               {MARKETS.map((m) => (
                 <button
@@ -457,7 +513,7 @@ export default function App() {
             </div>
           )}
 
-          {activeTab === 'signals' && (
+          {!isB3 && activeTab === 'signals' && (
             <SignalsView
               market={market}
               futuresLeverage={settings.futuresLeverage}
@@ -474,7 +530,7 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'trend' && (
+          {!isB3 && activeTab === 'trend' && (
             <TrendView
               trend={trend}
               assets={assets}
@@ -485,7 +541,7 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'wallet' && (
+          {!isB3 && activeTab === 'wallet' && (
             <WalletView
               sync={{ status: syncStatus, info: storageInfo, blocked: localStore.isBlocked(), detail: syncDetail }}
               market={market}
@@ -498,7 +554,7 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'market' && (
+          {!isB3 && activeTab === 'market' && (
             <MarketView assets={assets} coins={scanInfos.spot?.coins ?? []} onSelectCoin={(a) => handleSelectCoin(a, 'spot', 'market')} />
           )}
 
@@ -509,7 +565,7 @@ export default function App() {
           {activeTab === 'backtest' && <BacktestView onBack={() => goTo('settings')} />}
 
           {activeTab === 'settings' && (
-            <SettingsView settings={settings} scanInfos={scanInfos} sync={{ status: syncStatus, info: storageInfo, detail: syncDetail }} onSaveSettings={handleSaveSettings} onBack={() => goTo('signals')} onOpenBacktest={() => goTo('backtest')} />
+            <SettingsView settings={settings} scanInfos={scanInfos} sync={{ status: syncStatus, info: storageInfo, detail: syncDetail }} onSaveSettings={handleSaveSettings} onBack={() => goTo(isB3 ? 'b3signals' : 'signals')} onOpenBacktest={() => goTo('backtest')} />
           )}
         </main>
 
@@ -519,6 +575,9 @@ export default function App() {
           openSignals={openSignals}
           openPositions={paperAccount.positions.filter((p) => p.status === 'OPEN').length}
           openTrend={(trend?.signals ?? []).filter((t) => t.status === 'OPEN' || t.status === 'EXIT_SIGNAL').length}
+          section={section}
+          b3Signals={(b3?.indicators.signals ?? []).filter((x) => x.status === 'OPEN' || x.status === 'EXIT_SIGNAL').length}
+          b3Trend={(b3?.trend.signals ?? []).filter((t) => t.status === 'OPEN' || t.status === 'EXIT_SIGNAL').length}
         />
 
         <TradeSheet

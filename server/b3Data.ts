@@ -26,7 +26,7 @@ export const yahooSymbol = (ticker: string) => (ticker.startsWith('^') ? ticker 
  * Converte a resposta do Yahoo em velas diárias. Os preços são ajustados por proventos (fechamento ajustado),
  * proporcionalmente, para o retorno refletir dividendos e desdobramentos. Dias sem negociação são descartados.
  */
-export function parseYahooChart(json: any): CandleData[] {
+export function parseYahooChart(json: any, adjust = true): CandleData[] {
   const r = json?.chart?.result?.[0];
   const ts: number[] | undefined = r?.timestamp;
   const q = r?.indicators?.quote?.[0];
@@ -37,7 +37,7 @@ export function parseYahooChart(json: any): CandleData[] {
     const o = q.open?.[i], h = q.high?.[i], l = q.low?.[i], c = q.close?.[i], v = q.volume?.[i];
     if (![o, h, l, c].every((x) => typeof x === 'number' && Number.isFinite(x) && x > 0)) continue;
     const a = adj?.[i];
-    const f = typeof a === 'number' && Number.isFinite(a) && a > 0 ? a / c : 1;
+    const f = adjust && typeof a === 'number' && Number.isFinite(a) && a > 0 ? a / c : 1;
     const timestamp = Math.floor(ts[i] * 1000 / DAY_MS) * DAY_MS;
     out.push({
       time: new Date(timestamp).toISOString().slice(0, 10),
@@ -85,4 +85,17 @@ export async function fetchCdi(timeoutMs = 10000): Promise<Map<number, number>> 
   const map = parseCdiSeries(await res.json());
   if (map.size < 250) throw new Error('série do CDI incompleta');
   return map;
+}
+
+/**
+ * Velas diárias para os SINAIS ao vivo: preços reais (sem ajuste por proventos, para bater com o que você vê na corretora)
+ * e incluindo o pregão de hoje, que pode estar em andamento (quem decide se está fechado é o scanner).
+ */
+export async function fetchB3Daily(ticker: string, timeoutMs = 10000): Promise<CandleData[]> {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol(ticker))}?range=2y&interval=1d`;
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (CryptoRadar)' }, signal: AbortSignal.timeout(timeoutMs) });
+  if (!res.ok) throw new Error(`Yahoo Finance HTTP ${res.status}`);
+  const candles = parseYahooChart(await res.json(), false);
+  if (candles.length < 260) throw new Error(`histórico curto para ${ticker}`);
+  return candles;
 }

@@ -1,7 +1,8 @@
 import React from 'react';
-import { Radio, Wallet, TrendingUp, Activity } from 'lucide-react';
+import { Radio, Wallet, TrendingUp, Activity, ListChecks } from 'lucide-react';
 
-export type ScreenTab = 'signals' | 'wallet' | 'market' | 'settings' | 'details' | 'backtest' | 'trend';
+export type ScreenTab = 'signals' | 'wallet' | 'market' | 'settings' | 'details' | 'backtest' | 'trend' | 'b3signals' | 'b3trend' | 'b3track';
+export type AppSection = 'crypto' | 'b3';
 
 interface BottomNavProps {
   activeTab: ScreenTab;
@@ -9,10 +10,17 @@ interface BottomNavProps {
   openSignals: number;
   openPositions: number;
   openTrend?: number;
+  section?: AppSection;
+  b3Signals?: number;
+  b3Trend?: number;
 }
 
-export const BottomNav: React.FC<BottomNavProps> = ({ activeTab, onSelectTab, openSignals, openPositions, openTrend = 0 }) => {
-  const items = [
+export const BottomNav: React.FC<BottomNavProps> = ({ activeTab, onSelectTab, openSignals, openPositions, openTrend = 0, section = 'crypto', b3Signals = 0, b3Trend = 0 }) => {
+  const items = section === 'b3' ? [
+    { id: 'b3signals' as ScreenTab, label: 'Sinais', icon: Radio, count: b3Signals },
+    { id: 'b3trend' as ScreenTab, label: 'Tendência', icon: Activity, count: b3Trend },
+    { id: 'b3track' as ScreenTab, label: 'Resultados', icon: ListChecks, count: 0 }
+  ] : [
     { id: 'signals' as ScreenTab, label: 'Sinais', icon: Radio, count: openSignals },
     { id: 'trend' as ScreenTab, label: 'Tendência', icon: Activity, count: openTrend },
     { id: 'wallet' as ScreenTab, label: 'Carteira', icon: Wallet, count: openPositions },
@@ -21,7 +29,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({ activeTab, onSelectTab, op
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-40 bg-[#0f1115] border-t border-[#23272f] safe-area-pb">
-      <div className="max-w-2xl mx-auto grid grid-cols-4">
+      <div className={`max-w-2xl mx-auto grid ${items.length === 3 ? 'grid-cols-3' : 'grid-cols-4'}`}>
         {items.map((item) => {
           const Icon = item.icon;
           const active = activeTab === item.id || (item.id === 'market' && activeTab === 'details');

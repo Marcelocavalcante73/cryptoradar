@@ -9,6 +9,7 @@ import { runBacktest } from './src/services/backtest';
 import { binanceGet } from './server/universe';
 import { getBatchJob, startBatchJob } from './server/backtestJob';
 import { getLabJob, startLabJob } from './server/b3LabJob';
+import { getB3State, runB3Scan, startB3Scanner, ensureB3Scan, loadB3State } from './server/b3Scanner';
 import { getTrendState, runTrendScan, startTrendScanner, ensureTrendScan, loadTrendState } from './server/trendScanner';
 import { futuresKlines, futuresPrices, getFuturesProvider } from './server/futuresData';
 import { stateRead, stateWrite, storageStatus, checkAccess } from './server/stateApi';
@@ -354,6 +355,22 @@ app.post('/api/trend/scan', (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/b3 — swing trade na B3: tendência do Ibovespa, sinais de tendência e de indicadores.
+ * POST /api/b3/scan — força uma varredura imediata.
+ */
+app.get('/api/b3', async (req: Request, res: Response) => {
+  await ensureB3Scan(30 * 60e3, req.query.wait === '1' ? 25000 : 0);
+  res.json(getB3State());
+});
+
+app.post('/api/b3/scan', (req: Request, res: Response) => {
+  const ip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1';
+  if (isRateLimited(ip)) return res.status(429).json({ error: 'Limite de requisições excedido.' });
+  runB3Scan();
+  res.status(202).json({ started: true });
+});
+
+/**
  * POST /api/backtest/batch {market, tf, top, bars} — inicia o backtest de várias moedas em segundo plano.
  * GET  /api/backtest/batch — andamento e resultado do último backtest em lote.
  */
@@ -412,11 +429,12 @@ async function startServer() {
   }
 
   // Restaura o último resultado antes de aceitar pedidos: o servidor responde com dados desde o primeiro acesso
-  await Promise.all([loadScanners(), loadTrendState()]);
+  await Promise.all([loadScanners(), loadTrendState(), loadB3State()]);
 
   if (process.env.SCANNER_ENABLED !== 'false') {
     startScanner(Number(process.env.SCAN_INTERVAL_MINUTES) || 5);
     startTrendScanner();
+    startB3Scanner();
   }
 
   app.listen(PORT, '0.0.0.0', () => {

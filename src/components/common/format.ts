@@ -24,3 +24,8 @@ export function timeAgo(ts: number, now = Date.now()): string {
 }
 
 export const pnlColor = (n: number) => (n > 0 ? 'text-emerald-400' : n < 0 ? 'text-rose-400' : 'text-slate-400');
+
+export function fmtBrl(n: number): string {
+  if (!Number.isFinite(n)) return '—';
+  return `R$ ${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}

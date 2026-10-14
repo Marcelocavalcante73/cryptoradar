@@ -89,7 +89,8 @@ export function detectTrendEntry(
 export function updateTrendSignal(sig: TrendSignal, candles: CandleData[], now: number = Date.now()): TrendSignal {
   if (sig.status === 'STOPPED' || sig.status === 'CLOSED') return sig;
   const R = TREND_RULES;
-  const entryIdx = candles.findIndex((c) => c.timestamp === sig.signalDay + DAY_MS);
+  // Primeiro pregão depois do sinal (nas ações pode ser 3 dias depois, por causa do fim de semana)
+  const entryIdx = candles.findIndex((c) => c.timestamp > sig.signalDay);
   const out: TrendSignal = { ...sig };
 
   if (entryIdx < 0) return out; // o dia da entrada ainda não começou: sinal pendente
@@ -151,12 +152,17 @@ export interface TrendReadiness {
 
 export function evaluateTrendReadiness(signals: TrendSignal[], now = Date.now()): TrendReadiness {
   const results = signals.map(trendSignalResult).filter((r): r is { netPct: number; r: number } => r !== null);
-  const n = results.length;
   const days = signals.length ? (now - Math.min(...signals.map((s) => s.createdAt))) / 86400000 : 0;
-  const gains = results.filter((x) => x.netPct > 0).reduce((a, x) => a + x.netPct, 0);
-  const losses = Math.abs(results.filter((x) => x.netPct <= 0).reduce((a, x) => a + x.netPct, 0));
+  return readinessFromResults(results.map((r) => r.netPct), days);
+}
+
+/** Critérios de validação ao vivo a partir dos resultados (% líquido) das operações encerradas e dos dias de acompanhamento. */
+export function readinessFromResults(netPcts: number[], days: number): TrendReadiness {
+  const n = netPcts.length;
+  const gains = netPcts.filter((x) => x > 0).reduce((a, x) => a + x, 0);
+  const losses = Math.abs(netPcts.filter((x) => x <= 0).reduce((a, x) => a + x, 0));
   const pf = losses > 0 ? gains / losses : gains > 0 ? Infinity : 0;
-  const avg = n ? results.reduce((a, x) => a + x.netPct, 0) / n : 0;
+  const avg = n ? netPcts.reduce((a, x) => a + x, 0) / n : 0;
   const T = TREND_READINESS;
 
   const checks = [

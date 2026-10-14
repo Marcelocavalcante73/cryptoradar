@@ -158,6 +158,7 @@ export interface AppSettings {
   exchange: ExchangeConfig;
   telegram: TelegramConfig;
   realCapital?: number;        // capital real (USDT) usado só para sugerir tamanho de posição; 0/ausente = desligado
+  b3Capital?: number;          // capital (R$) para sugerir quantidade de ações na B3; 0/ausente = desligado
   realRiskPercent?: number;    // % do capital real arriscado por operação (padrão 1)
   futuresLeverage?: number;    // alavancagem padrão sugerida em futuros (padrão 3)
 }
