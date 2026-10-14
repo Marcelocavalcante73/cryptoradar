@@ -4,6 +4,7 @@ import {
   TrendSignal, trendSignalResult, evaluateTrendReadiness, TREND_READINESS
 } from '../../services/trendSignals';
 import { TREND_RULES } from '../../services/trendBacktest';
+import { AiExplain } from '../common/AiBox';
 import { fmtPrice, fmtPct, timeAgo, pnlColor } from '../common/format';
 
 export interface TrendWatchRow {
@@ -132,6 +133,7 @@ export const TrendView: React.FC<TrendViewProps> = ({ trend, assets, account, on
                       <span className="text-xs text-slate-500">sem simulação aberta</span>
                     )}
                   </div>
+                  <AiExplain kind="crypto-trend" id={s.id} />
                 </div>
               );
             })}

@@ -7,6 +7,7 @@ import {
 } from '../../services/trendSignals';
 import { ATR_STOP_MULT, ATR_TARGET_MULT } from '../../services/signalEngine';
 import { TREND_RULES } from '../../services/trendBacktest';
+import { AiExplain, AiSummary } from '../common/AiBox';
 import { fmtBrl, fmtPct, timeAgo, pnlColor } from '../common/format';
 
 export interface B3Info {
@@ -93,6 +94,7 @@ export const B3SignalsView: React.FC<{ info: B3Info | null; capital: number; ris
       <Header title="Sinais" info={info} />
       {info.lastError && <p className="text-sm text-amber-300">Erro na última varredura: {info.lastError}</p>}
       <MarketCard info={info} />
+      <AiSummary section="b3" />
 
       <section>
         <h3 className="text-sm font-medium text-slate-300 mb-2">Compras sugeridas ({active.length})</h3>
@@ -122,6 +124,7 @@ export const B3SignalsView: React.FC<{ info: B3Info | null; capital: number; ris
                   {!s.entryPrice && <p className="text-xs text-slate-500 mt-2">A entrada é a abertura do próximo pregão; stop e alvo são ajustados quando ela for conhecida.</p>}
                   <SizeLine capital={capital} risk={riskPercent} entry={entry} stop={s.stopPrice} />
                   <div className="text-xs text-slate-500 mt-2">sinal {timeAgo(s.createdAt)} · prazo máximo 20 pregões</div>
+                  <AiExplain kind="b3-signal" id={s.id} />
                 </div>
               );
             })}
@@ -225,6 +228,7 @@ export const B3TrendView: React.FC<{ info: B3Info | null; capital: number; riskP
                   {!s.entryPrice && <p className="text-xs text-slate-500 mt-2">A entrada é a abertura do próximo pregão; o stop é ajustado quando ela for conhecida.</p>}
                   <SizeLine capital={capital} risk={riskPercent} entry={entry} stop={s.stopPrice} />
                   <div className="text-xs text-slate-500 mt-2">sinal {timeAgo(s.createdAt)} · sem alvo fixo</div>
+                  <AiExplain kind="b3-trend" id={s.id} />
                 </div>
               );
             })}

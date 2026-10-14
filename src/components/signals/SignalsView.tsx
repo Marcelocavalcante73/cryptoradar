@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { TechnicalSignal, PaperAccount, MarketType } from '../../types/crypto';
 import { PerformancePanel } from './PerformancePanel';
+import { AiExplain, AiSummary } from '../common/AiBox';
 import { fmtPrice, fmtUsd, timeAgo } from '../common/format';
 import { suggestAmount } from '../paperTrading/TradeSheet';
 import { futuresSizing, maxSafeLeverage, DEFAULT_FUTURES_LEVERAGE } from '../../services/futures';
@@ -125,6 +126,8 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
         </p>
       )}
 
+      {!isDemoData && <AiSummary section="crypto" />}
+
       <div className="flex flex-wrap items-center gap-2">
         <Seg value={status} onChange={(v) => setStatus(v as 'open' | 'closed')} options={[['open', 'Abertos'], ['closed', 'Encerrados']]} />
         <Seg value={side} onChange={(v) => setSide(v as 'all' | 'buy' | 'sell')} options={[['all', 'Todos'], ['buy', futures ? 'Long' : 'Compra'], ['sell', futures ? 'Short' : 'Venda']]} />
@@ -216,6 +219,8 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
                     </button>
                   )}
                 </div>
+
+                {!s.isDemo && <AiExplain kind="crypto-signal" id={s.id} />}
 
                 <details className="mt-3 text-sm">
                   <summary className="cursor-pointer text-slate-400">Por quê?</summary>
