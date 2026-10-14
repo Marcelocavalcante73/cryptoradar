@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { LabResult } from '../../services/b3Lab';
+import { fetchJson } from '../../services/http';
 
 interface LabJobDto {
   id: number;
@@ -28,8 +29,7 @@ export const B3LabView: React.FC = () => {
 
   const poll = useCallback(async () => {
     try {
-      const r = await fetch('/api/b3lab', { signal: AbortSignal.timeout(8000) });
-      const j: LabJobDto | null = await r.json();
+      const { json: j } = await fetchJson<LabJobDto | null>('/api/b3lab', { signal: AbortSignal.timeout(8000) });
       setJob(j);
       if (!j || j.status !== 'running') stop();
       return j;
@@ -46,9 +46,8 @@ export const B3LabView: React.FC = () => {
   const run = async () => {
     setError(null);
     try {
-      const r = await fetch('/api/b3lab', { method: 'POST' });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j?.error || `Erro ${r.status}`);
+      const { ok, status, json: j } = await fetchJson('/api/b3lab', { method: 'POST' });
+      if (!ok) throw new Error(j?.error || `Erro ${status}`);
       setJob(j); startPolling();
     } catch (e: any) { setError(e?.message || 'Não foi possível iniciar.'); }
   };

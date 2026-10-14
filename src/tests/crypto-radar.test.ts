@@ -62,6 +62,7 @@ import { detectTrendEntry, updateTrendSignal, canEnter, splitClosed, trendSignal
 import { runTrendBacktest, btcRegimeByDay, TREND_RULES } from '../services/trendBacktest';
 import { marketTrend, detectIndicatorEntry, updateIndicatorSignal, indicatorSignalResult, evaluateB3Readiness, b3Sizing, B3Signal } from '../services/b3Signals';
 import { aiConfig, aiExplain, aiSummary, generateText, resetAiState } from '../../server/aiAnalyst';
+import { readJson, OldServerError } from '../services/http';
 import { runB3Scan, getB3State, resetB3State, formatB3Alert } from '../../server/b3Scanner';
 import { parseYahooChart, parseCdiSeries, B3_TICKERS, yahooSymbol } from '../../server/b3Data';
 import { runLab, simulate, prepareTicker, LAB_STRATEGIES, LAB_WARMUP, TickerData } from '../services/b3Lab';
@@ -1641,6 +1642,18 @@ console.log('\n--- Análise com IA ---');
   globalThis.fetch = realFetchAi;
   for (const [k, v] of [['GEMINI_API_KEY', saved.g], ['OPENAI_API_KEY', saved.o], ['AI_PROVIDER', saved.p], ['AI_MODEL', saved.m], ['AI_DAILY_LIMIT', saved.l]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   resetB3State();
+}
+
+console.log('\n--- Resposta HTML no lugar de JSON ---');
+{
+  const ok = await readJson(new Response('{"a":1}', { status: 200 }), '/api/x');
+  assert(ok.a === 1, 'HTTP: JSON válido é lido normalmente');
+  let err: any = null;
+  try { await readJson(new Response('<!doctype html><html></html>', { status: 200 }), '/api/ai/summary?section=b3'); } catch (e) { err = e; }
+  assert(err instanceof OldServerError && /versão antiga/.test(err.message) && err.message.includes('/api/ai/summary') && !err.message.includes('section='), 'HTTP: página do app no lugar do JSON vira mensagem clara de servidor desatualizado', String(err?.message));
+  let err2: any = null;
+  try { await readJson(new Response('boom', { status: 502 }), '/api/x'); } catch (e) { err2 = e; }
+  assert(err2 && /HTTP 502/.test(err2.message) && !(err2 instanceof OldServerError), 'HTTP: texto qualquer vira erro genérico com o status');
 }
 
 // ============================================================================

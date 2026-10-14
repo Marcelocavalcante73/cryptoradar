@@ -4,6 +4,7 @@ import { BatchSummary, BACKTEST_CRITERIA } from '../../services/backtestBatch';
 import { BacktestStats } from '../../services/backtest';
 import { pnlColor } from '../common/format';
 import { B3LabView } from './B3LabView';
+import { fetchJson } from '../../services/http';
 
 interface Job {
   id: number;
@@ -63,8 +64,7 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 
   const poll = useCallback(async () => {
     try {
-      const r = await fetch('/api/backtest/batch', { signal: AbortSignal.timeout(8000) });
-      const j: Job | null = await r.json();
+      const { json: j } = await fetchJson<Job | null>('/api/backtest/batch', { signal: AbortSignal.timeout(8000) });
       setJob(j);
       if (!j || j.status !== 'running') stop();
       return j;
@@ -87,13 +87,12 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const run = async () => {
     setError(null);
     try {
-      const r = await fetch('/api/backtest/batch', {
+      const { ok, status, json: j } = await fetchJson('/api/backtest/batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ strategy: b3 ? 'trend' : strategy, market, tf, top, list, bars: trend ? 1500 : 3000 })
       });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j?.error || `Erro ${r.status}`);
+      if (!ok) throw new Error(j?.error || `Erro ${status}`);
       setJob(j);
       startPolling();
     } catch (e: any) {

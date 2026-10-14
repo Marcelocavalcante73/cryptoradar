@@ -449,6 +449,9 @@ async function startServer() {
     isProduction = false;
   }
 
+  // Rota de API que não existe devolve JSON (e não a página do app), para o erro ser claro
+  app.use('/api', (_req: Request, res: Response) => { res.status(404).json({ error: 'Rota não encontrada neste servidor.' }); });
+
   if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
