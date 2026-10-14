@@ -49,6 +49,7 @@ import { buildUniverse as buildUniverseRaw, resolveFuturesSymbol, resetTop100Cac
 process.env.STATE_BACKEND = 'memory'; // testes não gravam no disco nem no Supabase
 process.env.UNIVERSE_CACHE = 'off';
 process.env.RETRY_BASE_MS = '1';
+process.env.B3_PERSIST = 'off';
 const buildUniverse = (m?: 'spot' | 'futures') => { resetTop100Cache(); return buildUniverseRaw(m); };
 import { formatTelegramAlert } from '../../server/scanner';
 import { computeSignalPerformance, signalResultR, evaluateReadiness, PerfSignal } from '../services/signalPerformance';
@@ -59,6 +60,8 @@ import { positionUnrealizedPnl } from '../services/paperTradingService';
 import { summarizeBatch, riskCurve, withoutBest } from '../services/backtestBatch';
 import { detectTrendEntry, updateTrendSignal, canEnter, splitClosed, trendSignalResult, evaluateTrendReadiness, TrendSignal } from '../services/trendSignals';
 import { runTrendBacktest, btcRegimeByDay, TREND_RULES } from '../services/trendBacktest';
+import { marketTrend, detectIndicatorEntry, updateIndicatorSignal, indicatorSignalResult, evaluateB3Readiness, b3Sizing, B3Signal } from '../services/b3Signals';
+import { runB3Scan, getB3State, resetB3State, formatB3Alert } from '../../server/b3Scanner';
 import { parseYahooChart, parseCdiSeries, B3_TICKERS, yahooSymbol } from '../../server/b3Data';
 import { runLab, simulate, prepareTicker, LAB_STRATEGIES, LAB_WARMUP, TickerData } from '../services/b3Lab';
 import { startBatchJob, getBatchJob } from '../../server/backtestJob';
@@ -1422,6 +1425,123 @@ console.log('\n--- Laboratório B3 ---');
   // CDI do Banco Central
   const cdi = parseCdiSeries([{ data: '02/01/2020', valor: '0.017452' }, { data: 'x', valor: '1' }, { data: '03/01/2020', valor: 'abc' }]);
   assert(cdi.size === 1 && Math.abs([...cdi.values()][0] - 0.00017452) < 1e-12, 'CDI: lê data dd/mm/aaaa e converte % ao dia em fração');
+}
+
+// ============================================================================
+// SEÇÃO B3: SWING TRADE, TENDÊNCIA DO MERCADO E SCANNER
+// ============================================================================
+console.log('\n--- B3 swing trade ---');
+{
+  const DAYMS = 86400000;
+  const T0 = 1_500_000_000_000;
+  const day = (i: number) => Math.floor(T0 / DAYMS) * DAYMS + i * DAYMS;
+  const bar = (i: number, o: number, c: number, spread = 0.01, vol = 1000): CandleData => ({
+    time: String(i), timestamp: day(i), open: o, high: Math.max(o, c) * (1 + spread), low: Math.min(o, c) * (1 - spread), close: c, volume: vol
+  });
+  const series = (n: number, f: (i: number) => number): CandleData[] => {
+    let p = 100;
+    return Array.from({ length: n }, (_, i) => { const o = p; p = o * (1 + f(i)); return bar(i, o, p); });
+  };
+
+  // Tendência do mercado
+  const up = marketTrend(series(260, () => 0.002))!;
+  const down = marketTrend(series(260, () => -0.002))!;
+  assert(up.label === 'Alta' && up.bullish && up.close > up.sma50 && up.sma50 > up.sma200 && up.change20dPct > 0, 'B3: Ibovespa em alta => mercado em alta, compras liberadas');
+  assert(down.label === 'Baixa' && !down.bullish && down.change20dPct < 0, 'B3: Ibovespa em queda => mercado em baixa, compras bloqueadas');
+  assert(marketTrend(series(150, () => 0.001)) === null, 'B3: poucos dados => sem leitura de mercado');
+
+  // Ciclo de vida de um sinal de indicadores (entrada no pregão seguinte, inclusive depois do fim de semana)
+  const base: B3Signal = { id: 'X', symbol: 'TEST3', signalDay: day(100), createdAt: 0, refPrice: 100, stopPrice: 98.5, targetPrice: 103, atr: 1, score: 70, status: 'OPEN' };
+  const NOW = day(200); // tudo já fechado
+  const gapWeekend = [bar(100, 99, 100), { ...bar(103, 100.5, 101), timestamp: day(103) }]; // sexta -> segunda
+  const u1 = updateIndicatorSignal(base, gapWeekend, NOW);
+  assert(u1.entryPrice === 100.5 && u1.status === 'OPEN', 'B3: entrada na abertura do próximo pregão (sexta -> segunda)', JSON.stringify(u1));
+  const stopped = updateIndicatorSignal(base, [bar(100, 99, 100), bar(101, 100, 99.5, 0.0), bar(102, 99.5, 97, 0.0)], NOW);
+  assert(stopped.status === 'STOP' && Math.abs(stopped.exitPrice! - (100 - 1.5)) < 1e-9, 'B3: stop de 1,5 ATR atingido', JSON.stringify(stopped));
+  const gapDown = updateIndicatorSignal(base, [bar(100, 99, 100), bar(101, 100, 100, 0.0), bar(102, 95, 94, 0.0)], NOW);
+  assert(gapDown.status === 'STOP' && gapDown.exitPrice === 95, 'B3: abertura abaixo do stop sai na abertura (pior que o stop)');
+  const target = updateIndicatorSignal(base, [bar(100, 99, 100), bar(101, 100, 100.5, 0.0), bar(102, 101, 104, 0.0)], NOW);
+  assert(target.status === 'TARGET' && Math.abs(target.exitPrice! - 103) < 1e-9, 'B3: alvo de 3 ATR atingido', JSON.stringify(target));
+  const both = updateIndicatorSignal(base, [bar(100, 99, 100), bar(101, 100, 100, 0.0), { ...bar(102, 100, 100), high: 105, low: 97 }], NOW);
+  assert(both.status === 'STOP', 'B3: stop e alvo no mesmo dia => vale o stop (conservador)');
+  const flat = Array.from({ length: 30 }, (_, k) => bar(100 + k, 100, 100, 0.001));
+  const timeout = updateIndicatorSignal(base, flat, NOW);
+  assert(timeout.status === 'TIMEOUT' && timeout.entryPrice === 100, 'B3: sem stop nem alvo, sai por prazo (20 pregões)', timeout.status);
+  const pendingExit = updateIndicatorSignal(base, flat.slice(0, 22), day(100 + 22));
+  assert(pendingExit.status === 'EXIT_SIGNAL', 'B3: prazo vencido no último pregão => aviso de saída para amanhã', pendingExit.status);
+  const res = indicatorSignalResult(target)!;
+  assert(res.netPct > 2 && res.netPct < 3 && res.r > 1, 'B3: resultado líquido do alvo desconta custos', JSON.stringify(res));
+  assert(evaluateB3Readiness([]).status === 'collecting', 'B3: sem operações encerradas => ainda coletando');
+
+  // Tamanho da posição (lotes de 100 e mercado fracionário)
+  const sz = b3Sizing(10000, 1, 30, 28)!;
+  assert(sz.shares === 50 && sz.fractional && Math.abs(sz.riskBrl - 100) < 1e-9, 'B3: tamanho pelo risco (1% de R$ 10 mil, stop R$ 2) = 50 ações, fracionário', JSON.stringify(sz));
+  const sz2 = b3Sizing(1_000_000, 1, 30, 28)!;
+  assert(sz2.shares === 5000 && !sz2.fractional && sz2.lots === 50, 'B3: tamanho em lotes de 100');
+  assert(b3Sizing(10000, 1, 30, 31) === null && b3Sizing(0, 1, 30, 28) === null && b3Sizing(100, 1, 300, 290) === null, 'B3: stop inválido, capital zero ou capital menor que 1 ação => sem sugestão');
+  const capped = b3Sizing(1000, 1, 30, 29.9)!;
+  assert(capped.shares === 33 && capped.cost <= 1000, 'B3: nunca passa do capital (sem alavancagem)', JSON.stringify(capped));
+
+  // Sinal de indicadores só com mercado em alta
+  let found: ReturnType<typeof detectIndicatorEntry> = null;
+  let upStrong: CandleData[] = [];
+  for (let k = 0; k < 6 && !found; k++) {
+    const sr = series(400, (i) => 0.006 + Math.sin(i / 12 + k) * 0.01).map((x, i) => ({ ...x, volume: i % 4 === 0 ? 5000 : 1000 }));
+    for (let cut = 200; cut < 400 && !found; cut++) {
+      const f = detectIndicatorEntry(sr.slice(0, cut), true, 'TEST3', 1);
+      if (f) { found = f; upStrong = sr.slice(0, cut); }
+    }
+  }
+  assert(found !== null && found.status === 'OPEN' && found.stopPrice < found.refPrice && found.targetPrice > found.refPrice && found.score >= 60, 'B3: motor de indicadores gera sinal de compra com stop e alvo');
+  assert(detectIndicatorEntry(upStrong, false, 'TEST3', 1) === null, 'B3: mercado em baixa bloqueia o sinal de indicadores');
+
+  // Scanner com Yahoo simulado: rompimento de 55 dias vira sinal de tendência
+  const realFetchS = globalThis.fetch;
+  const lastDay = Math.floor(Date.now() / DAYMS) * DAYMS - DAYMS; // ontem: já fechado
+  const chartFor = (closes: number[]) => {
+    const ts: number[] = [], o: number[] = [], h: number[] = [], l: number[] = [], c: number[] = [], v: number[] = [];
+    closes.forEach((cl, i) => {
+      const prev = i ? closes[i - 1] : cl;
+      ts.push((lastDay - (closes.length - 1 - i) * DAYMS) / 1000); o.push(prev); c.push(cl);
+      h.push(Math.max(prev, cl) * 1.01); l.push(Math.min(prev, cl) * 0.99); v.push(1000);
+    });
+    return { chart: { result: [{ timestamp: ts, indicators: { quote: [{ open: o, high: h, low: l, close: c, volume: v }] } }] } };
+  };
+  const ibovCloses = Array.from({ length: 400 }, (_, i) => 100 * Math.pow(1.001, i));
+  const flatCloses = Array.from({ length: 400 }, (_, i) => 100 + Math.sin(i / 3));
+  const breakout = [...flatCloses.slice(0, 399), 130];
+  globalThis.fetch = ((url: any) => {
+    const u = decodeURIComponent(String(url));
+    if (!u.includes('query1.finance.yahoo.com')) return Promise.reject(new Error('url inesperada: ' + u));
+    const sym = u.split('/chart/')[1].split('?')[0];
+    const closes = sym === '^BVSP' ? ibovCloses : sym === 'PETR4.SA' ? breakout : flatCloses;
+    return Promise.resolve(new Response(JSON.stringify(chartFor(closes)), { status: 200 }));
+  }) as typeof fetch;
+  resetB3State();
+  await runB3Scan();
+  const bs = getB3State();
+  assert(bs.lastError === null && bs.market?.bullish === true && bs.market.label === 'Alta', 'Scanner B3: lê o Ibovespa e libera as compras', String(bs.lastError));
+  const petr = bs.trend.signals.find((x) => x.symbol === 'PETR4');
+  assert(!!petr && petr.status === 'OPEN' && petr.refPrice === 130 && petr.stopPrice < 130, 'Scanner B3: rompimento de 55 dias vira sinal de tendência com stop', JSON.stringify(petr));
+  assert(bs.trend.signals.length === 1 && bs.trend.watch.length === 40 && bs.trend.watch[0].symbol === 'PETR4' && bs.trend.watch[0].distancePct < 0, 'Scanner B3: só PETR4 rompeu; observação cobre as 40 ações, a mais próxima primeiro', `${bs.trend.signals.map((x) => x.symbol)} ${bs.trend.watch.length} ${bs.trend.watch[0]?.distancePct}`);
+  assert(bs.indicators.scores.length > 30, 'Scanner B3: ranking de pontuação das ações');
+  assert(formatB3Alert('trend-entry', petr!).includes('PETR4') && formatB3Alert('trend-entry', petr!).includes('R$'), 'Scanner B3: alerta de entrada em reais');
+  // Ibovespa em baixa: nenhuma compra nova
+  const ibovDown = Array.from({ length: 400 }, (_, i) => 100 * Math.pow(0.999, i));
+  globalThis.fetch = ((url: any) => {
+    const u = decodeURIComponent(String(url));
+    const sym = u.split('/chart/')[1].split('?')[0];
+    return Promise.resolve(new Response(JSON.stringify(chartFor(sym === '^BVSP' ? ibovDown : sym === 'PETR4.SA' ? breakout : flatCloses)), { status: 200 }));
+  }) as typeof fetch;
+  resetB3State();
+  await runB3Scan();
+  assert(getB3State().market?.bullish === false && getB3State().trend.signals.length === 0 && getB3State().indicators.signals.length === 0, 'Scanner B3: Ibovespa em baixa não gera sinal novo');
+  // Yahoo fora do ar: erro claro
+  globalThis.fetch = (() => Promise.resolve(new Response('', { status: 429 }))) as typeof fetch;
+  resetB3State();
+  await runB3Scan();
+  assert(!!getB3State().lastError && getB3State().running === false, 'Scanner B3: Yahoo indisponível => erro claro e scanner livre', String(getB3State().lastError));
+  globalThis.fetch = realFetchS;
 }
 
 // ============================================================================

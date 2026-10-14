@@ -12,6 +12,7 @@ const MARKET_KEY = 'cryptoradar_market_v1';
 export const DEFAULT_SETTINGS: AppSettings = {
   baseCurrency: 'USDT',
   realCapital: 0,
+  b3Capital: 0,
   realRiskPercent: 1,
   futuresLeverage: 3,
   refreshIntervalSeconds: 30,

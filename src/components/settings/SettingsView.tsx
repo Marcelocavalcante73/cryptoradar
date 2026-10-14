@@ -142,6 +142,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, scanInfos,
             onBlur={(e) => onSaveSettings({ ...settings, realCapital: num(e.target.value, 0, 100000000, settings.realCapital || 0) })} />
         </div>
         <div className={row}>
+          <span className="text-slate-200">Capital para operar na B3 (R$)</span>
+          <input className={input} inputMode="decimal" defaultValue={settings.b3Capital || ''} placeholder="0"
+            onBlur={(e) => onSaveSettings({ ...settings, b3Capital: num(e.target.value, 0, 1000000000, settings.b3Capital || 0) })} />
+        </div>
+        <div className={row}>
           <span className="text-slate-200">Risco por operação (%)</span>
           <input className={input} inputMode="decimal" defaultValue={settings.realRiskPercent ?? 1}
             onBlur={(e) => onSaveSettings({ ...settings, realRiskPercent: num(e.target.value, 0.1, 5, settings.realRiskPercent ?? 1) })} />
