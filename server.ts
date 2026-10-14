@@ -8,6 +8,7 @@ import { fetchHistory } from './server/history';
 import { runBacktest } from './src/services/backtest';
 import { binanceGet } from './server/universe';
 import { getBatchJob, startBatchJob } from './server/backtestJob';
+import { getLabJob, startLabJob } from './server/b3LabJob';
 import { getTrendState, runTrendScan, startTrendScanner, ensureTrendScan, loadTrendState } from './server/trendScanner';
 import { futuresKlines, futuresPrices, getFuturesProvider } from './server/futuresData';
 import { stateRead, stateWrite, storageStatus, checkAccess } from './server/stateApi';
@@ -367,6 +368,17 @@ app.post('/api/backtest/batch', (req: Request, res: Response) => {
   // A estratégia de tendência é só para spot (compras)
   const job = startBatchJob({ list: b.list === 'classic2022' ? 'classic2022' : b.list === 'b3' ? 'b3' : 'top', strategy: trend || b.list === 'b3' ? 'trend' : 'signals', market: trend || b.list === 'b3' ? 'spot' : parseMarket(b.market), tf, top, bars });
   res.status(202).json(job);
+});
+
+/** POST /api/b3lab — inicia o laboratório da B3; GET — andamento e resultado. */
+app.post('/api/b3lab', (req: Request, res: Response) => {
+  const ip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1';
+  if (isRateLimited(ip)) return res.status(429).json({ error: 'Limite de requisições excedido.' });
+  res.status(202).json(startLabJob());
+});
+
+app.get('/api/b3lab', (_req: Request, res: Response) => {
+  res.json(getLabJob());
 });
 
 app.get('/api/backtest/batch', (_req: Request, res: Response) => {
