@@ -2,7 +2,7 @@
  * Laboratório da B3: compara estratégias de CARTEIRA (várias ações ao mesmo tempo, com caixa rendendo CDI)
  * com as referências que importam: CDI e Ibovespa comprado e segurado.
  *
- * REGRAS FIXAS (definidas antes de ver qualquer resultado; só 3 candidatas, para não "garimpar" até dar certo):
+ * REGRAS FIXAS (definidas antes de ver qualquer resultado; só 4 candidatas, para não "garimpar" até dar certo):
  *  - Sinais usam só dados até o fechamento do dia; a ordem é executada na ABERTURA do dia seguinte.
  *  - Até 5 posições, de tamanho igual (1/5 do patrimônio na entrada). Caixa rende o CDI.
  *  - Custo por lado: taxa + derrapagem. Filtro de mercado: Ibovespa acima da média de 200 dias (sem ele, nada de compras).
@@ -12,6 +12,8 @@
 import { CandleData } from '../types/crypto';
 import { DEFAULT_BACKTEST_OPTIONS } from './backtest';
 import { atrSeries, dayKey, donchianHigh, donchianLow } from './trendBacktest';
+import { calculateAllIndicators, calculateATR } from './indicators';
+import { scoreCandles, MIN_SCORE, MIN_TREND_STRENGTH_ATR, ATR_STOP_MULT, ATR_TARGET_MULT } from './signalEngine';
 
 export const LAB_SLOTS = 5;
 export const LAB_WARMUP = 210;
@@ -22,15 +24,18 @@ export interface TickerData {
   c: CandleData[];            // alinhado ao calendário do Ibovespa (dias sem negociação repetem o último preço)
   traded: boolean[];          // houve negociação de fato nesse dia
   sma200: number[]; sma5: number[]; rsi2: number[]; atr20: (number | undefined)[]; ret126: number[];
+  ind: CandleData[];          // velas com EMA/MACD/RSI (só a partir da 1ª negociação)
+  indOffset: number;
 }
 
-export interface Pos { shares: number; entryIdx: number; entryPx: number; stop: number }
+export interface Pos { shares: number; entryIdx: number; entryPx: number; stop: number; target?: number }
 export interface Ctx { i: number; regime: boolean; held: Map<string, Pos>; data: Map<string, TickerData> }
 export interface Signals { exits: string[]; entries: string[] }
 export interface LabStrategy {
   id: string; name: string; desc: string;
   signals(ctx: Ctx): Signals;
   stopFor?(t: TickerData, i: number): number;
+  targetFor?(t: TickerData, i: number): number;
 }
 
 const sma = (v: number[], n: number): number[] => {
@@ -71,7 +76,9 @@ export function prepareTicker(raw: CandleData[], calendar: CandleData[]): Ticker
   }
   const closes = c.map((x) => x.close);
   const ret126 = closes.map((x, i) => (i >= 126 ? x / closes[i - 126] - 1 : NaN));
-  return { c, traded, sma200: sma(closes, 200), sma5: sma(closes, 5), rsi2: rsi(closes, 2), atr20: atrSeries(c, 20), ret126 };
+  const indOffset = Math.max(0, c.findIndex((x) => Number.isFinite(x.close)));
+  const ind = calculateAllIndicators(c.slice(indOffset), 10);
+  return { c, traded, sma200: sma(closes, 200), sma5: sma(closes, 5), rsi2: rsi(closes, 2), atr20: atrSeries(c, 20), ret126, ind, indOffset };
 }
 
 const ok = (x: number | undefined): x is number => typeof x === 'number' && Number.isFinite(x);
@@ -124,7 +131,52 @@ export const LAB_STRATEGIES: LabStrategy[] = [
       return { exits, entries: entries.sort((a, b) => a.r - b.r).map((e) => e.s) };
     }
   }
+  ,
+  {
+    id: 'indicators', name: 'Confluência de indicadores',
+    desc: 'O mesmo motor das criptos (médias EMA 20/50, MACD, RSI e volume; pontuação ≥ 60 só para compra), em velas diárias. Stop 1,5 ATR, alvo 3 ATR e saída após 20 pregões. Só com o Ibovespa em alta.',
+    stopFor: (t, i) => { const a = atrAt(t, i); return a ? t.c[i].close - ATR_STOP_MULT * a : 0; },
+    targetFor: (t, i) => { const a = atrAt(t, i); return a ? t.c[i].close + ATR_TARGET_MULT * a : Infinity; },
+    signals({ i, regime, held, data }) {
+      const exits: string[] = [];
+      for (const [sym, p] of held) {
+        const c = data.get(sym)!.c[i].close;
+        if (c <= p.stop || c >= (p.target ?? Infinity) || i - p.entryIdx >= 20) exits.push(sym);
+      }
+      const entries: { s: string; sc: number }[] = [];
+      if (regime) for (const [sym, t] of data) {
+        if (held.has(sym) || !t.traded[i]) continue;
+        const sc = indicatorScore(t, i);
+        if (sc !== null) entries.push({ s: sym, sc });
+      }
+      return { exits, entries: entries.sort((a, b) => b.sc - a.sc).map((e) => e.s) };
+    }
+  }
 ];
+
+/** Janela de velas com indicadores até o dia i (80 velas bastam para o motor de sinais). */
+const indWindow = (t: TickerData, i: number): CandleData[] | null => {
+  const k = i - t.indOffset;
+  return k < 80 ? null : t.ind.slice(k - 79, k + 1);
+};
+
+const atrAt = (t: TickerData, i: number): number | undefined => {
+  const w = indWindow(t, i);
+  return w ? calculateATR(w) : undefined;
+};
+
+/** Pontuação de COMPRA do motor de indicadores (null = sem sinal), com as mesmas travas do motor das criptos. */
+function indicatorScore(t: TickerData, i: number): number | null {
+  const w = indWindow(t, i);
+  if (!w) return null;
+  const b = scoreCandles(w);
+  if (!b || b.total < MIN_SCORE) return null;
+  const atr = calculateATR(w);
+  const last = w[w.length - 1];
+  if (!atr || atr <= 0 || last.ema20 === undefined || last.ema50 === undefined) return null;
+  if (Math.abs(last.ema20 - last.ema50) < atr * MIN_TREND_STRENGTH_ATR) return null;
+  return b.total;
+}
 
 export interface LabTrade { symbol: string; entryIdx: number; exitIdx: number; netPct: number }
 export interface Segment { cagr: number; cdi: number; ibov: number; maxDd: number }
@@ -187,7 +239,11 @@ export function simulate(strategy: LabStrategy, data: Map<string, TickerData>, i
       if (!(size > 0.01) || !(open > 0)) continue;
       const buy = open * (1 + cost);
       const t = data.get(sym)!;
-      held.set(sym, { shares: size / buy, entryIdx: i, entryPx: buy, stop: strategy.stopFor ? strategy.stopFor(t, i - 1) : 0 });
+      held.set(sym, {
+        shares: size / buy, entryIdx: i, entryPx: buy,
+        stop: strategy.stopFor ? strategy.stopFor(t, i - 1) : 0,
+        target: strategy.targetFor ? strategy.targetFor(t, i - 1) : undefined
+      });
       cash -= size;
     }
 
@@ -248,7 +304,7 @@ export function evaluate(strategy: LabStrategy, data: Map<string, TickerData>, i
   };
 }
 
-/** Roda as 3 candidatas e as referências (CDI e Ibovespa) sobre os mesmos dados. */
+/** Roda as candidatas e as referências (CDI e Ibovespa) sobre os mesmos dados. */
 export function runLab(raw: Map<string, CandleData[]>, ibov: CandleData[], options: LabOptions = {}) {
   const data = new Map<string, TickerData>();
   for (const [sym, c] of raw) if (c.length > LAB_WARMUP) data.set(sym, prepareTicker(c, ibov));

@@ -1407,7 +1407,11 @@ console.log('\n--- Laboratório B3 ---');
   for (let k = 0; k < 8; k++) strong.set('S' + k, mk(N, (i) => 0.0005 * (k + 1) + Math.sin(i / 11 + k) * 0.015));
   const up = runLab(strong, ibovUp, { cdiDaily: cdiFn });
   const mom = up.results.find((r) => r.id === 'momentum')!;
-  assert(mom.entries > 0 && mom.equity.length === N - LAB_WARMUP && up.results.length === 3, 'Lab: roda as 3 candidatas e gera curva de patrimônio');
+  assert(mom.entries > 0 && mom.equity.length === N - LAB_WARMUP && up.results.length === 4, 'Lab: roda as 4 candidatas e gera curva de patrimônio');
+  const withVol = new Map<string, CandleData[]>();
+  for (let k = 0; k < 8; k++) withVol.set('V' + k, mk(N, (i) => 0.006 + Math.sin(i / 8 + k) * 0.02).map((x, i) => ({ ...x, volume: i % 4 === 0 ? 5000 : 1000 })));
+  const indi = runLab(withVol, ibovUp, { cdiDaily: cdiFn }).results.find((r) => r.id === 'indicators')!;
+  assert(indi.entries > 0, 'Lab: confluência de indicadores gera entradas em tendência de alta com volume', String(indi.entries));
   assert(mom.checks.length === 5 && up.benchmarks.whole.ibov > 0, 'Lab: 5 critérios e referências (CDI e Ibovespa)');
 
   // Ações com dias sem negociação não quebram o alinhamento
