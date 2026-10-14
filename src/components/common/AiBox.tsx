@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { accessKey } from '../../services/remoteState';
+import { fetchJson } from '../../services/http';
 
 type Status = { enabled: boolean; provider: string | null } | null;
 let statusPromise: Promise<Status> | null = null;
@@ -8,7 +9,7 @@ let statusPromise: Promise<Status> | null = null;
 const loadStatus = (): Promise<Status> => {
   if (!statusPromise) {
     statusPromise = fetch('/api/ai/status', { signal: AbortSignal.timeout(6000) })
-      .then((r) => (r.ok ? r.json() : null)).catch(() => { statusPromise = null; return null; });
+      .then((r) => (r.ok ? r.json() : null)).then((j) => (j && typeof j.enabled === 'boolean' ? j : null)).catch(() => { statusPromise = null; return null; });
   }
   return statusPromise;
 };
@@ -42,9 +43,8 @@ export const AiExplain: React.FC<{ kind: 'crypto-signal' | 'crypto-trend' | 'b3-
   const ask = async () => {
     setState({ loading: true });
     try {
-      const r = await fetch('/api/ai/explain', { method: 'POST', headers: headers(), body: JSON.stringify({ kind, id }), signal: AbortSignal.timeout(35000) });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j?.error || `Erro ${r.status}`);
+      const { ok, status, json: j } = await fetchJson('/api/ai/explain', { method: 'POST', headers: headers(), body: JSON.stringify({ kind, id }), signal: AbortSignal.timeout(35000) });
+      if (!ok) throw new Error(j?.error || `Erro ${status}`);
       setState({ loading: false, text: j.text, provider: j.provider });
     } catch (e: any) {
       setState({ loading: false, error: e?.message || 'Não foi possível explicar agora.' });
@@ -73,9 +73,8 @@ export const AiSummary: React.FC<{ section: 'crypto' | 'b3' }> = ({ section }) =
   const ask = async () => {
     setState((s) => ({ ...s, loading: true, error: undefined }));
     try {
-      const r = await fetch(`/api/ai/summary?section=${section}`, { headers: headers(), signal: AbortSignal.timeout(35000) });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j?.error || `Erro ${r.status}`);
+      const { ok, status, json: j } = await fetchJson(`/api/ai/summary?section=${section}`, { headers: headers(), signal: AbortSignal.timeout(35000) });
+      if (!ok) throw new Error(j?.error || `Erro ${status}`);
       setState({ loading: false, text: j.text, provider: j.provider });
     } catch (e: any) {
       setState({ loading: false, error: e?.message || 'Não foi possível resumir agora.' });
