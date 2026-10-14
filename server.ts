@@ -9,6 +9,7 @@ import { runBacktest } from './src/services/backtest';
 import { binanceGet } from './server/universe';
 import { getBatchJob, startBatchJob } from './server/backtestJob';
 import { getLabJob, startLabJob } from './server/b3LabJob';
+import { aiConfig, aiExplain, aiSummary } from './server/aiAnalyst';
 import { getB3State, runB3Scan, startB3Scanner, ensureB3Scan, loadB3State } from './server/b3Scanner';
 import { getTrendState, runTrendScan, startTrendScanner, ensureTrendScan, loadTrendState } from './server/trendScanner';
 import { futuresKlines, futuresPrices, getFuturesProvider } from './server/futuresData';
@@ -352,6 +353,40 @@ app.post('/api/trend/scan', (req: Request, res: Response) => {
   if (isRateLimited(ip)) return res.status(429).json({ error: 'Limite de requisições excedido.' });
   runTrendScan();
   res.status(202).json({ started: true });
+});
+
+/**
+ * Análise com IA (Gemini ou ChatGPT): só explica e resume o que os scanners calcularam.
+ *  GET  /api/ai/status                  ligada? qual provedor?
+ *  POST /api/ai/explain {kind, id}      explica um sinal (crypto-signal | crypto-trend | b3-signal | b3-trend)
+ *  GET  /api/ai/summary?section=b3      resumo do dia (crypto | b3)
+ * Usa a chave de acesso (X-Access-Key) quando ela existe, para que ninguém gaste a sua cota de IA.
+ */
+const aiHits = new Map<string, number[]>();
+function aiLimited(ip: string): boolean {
+  const now = Date.now();
+  const hits = (aiHits.get(ip) || []).filter((t) => now - t < 60000);
+  if (hits.length >= 20) return true;
+  hits.push(now);
+  aiHits.set(ip, hits);
+  return false;
+}
+const aiGuard = (req: Request, res: Response): boolean => {
+  const acc = checkAccess(req.headers['x-access-key'] as string | undefined);
+  if (acc.status !== 200) { res.status(acc.status).json(acc.json); return false; }
+  if (aiLimited(clientIp(req))) { res.status(429).json({ error: 'Muitas análises seguidas. Aguarde um minuto.' }); return false; }
+  return true;
+};
+app.get('/api/ai/status', (_req: Request, res: Response) => { const c = aiConfig(); res.json({ enabled: c.enabled, provider: c.provider, model: c.model }); });
+app.post('/api/ai/explain', async (req: Request, res: Response) => {
+  if (!aiGuard(req, res)) return;
+  const r = await aiExplain(req.body?.kind, req.body?.id);
+  res.status(r.status).json(r.json);
+});
+app.get('/api/ai/summary', async (req: Request, res: Response) => {
+  if (!aiGuard(req, res)) return;
+  const r = await aiSummary(req.query.section);
+  res.status(r.status).json(r.json);
 });
 
 /**
