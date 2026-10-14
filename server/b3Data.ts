@@ -52,7 +52,7 @@ export function parseYahooChart(json: any): CandleData[] {
 
 /** Baixa até ~`years` anos de velas diárias; o último pregão (ainda em andamento) fica de fora. */
 export async function fetchB3History(ticker: string, years = 8, timeoutMs = 10000): Promise<CandleData[]> {
-  const range = years >= 10 ? '10y' : years >= 5 ? '5y' : '2y';
+  const range = years > 5 ? '10y' : years > 2 ? '5y' : '2y';
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yahooSymbol(ticker))}?range=${range}&interval=1d&events=div%2Csplit`;
   const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (CryptoRadar)' }, signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) throw new Error(`Yahoo Finance HTTP ${res.status}`);
@@ -60,4 +60,29 @@ export async function fetchB3History(ticker: string, years = 8, timeoutMs = 1000
   if (candles.length < 300) throw new Error(`histórico curto para ${ticker}`);
   candles.pop();
   return candles;
+}
+
+/** Converte a série diária do CDI do Banco Central (SGS 12, % ao dia) em mapa dia → taxa diária (fração). */
+export function parseCdiSeries(json: any): Map<number, number> {
+  const map = new Map<number, number>();
+  if (!Array.isArray(json)) return map;
+  for (const row of json) {
+    const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(String(row?.data ?? ''));
+    const v = parseFloat(String(row?.valor ?? ''));
+    if (!m || !Number.isFinite(v) || v < 0) continue;
+    map.set(Math.floor(Date.UTC(+m[3], +m[2] - 1, +m[1]) / DAY_MS), v / 100);
+  }
+  return map;
+}
+
+/** CDI diário dos últimos ~10 anos (Banco Central, gratuito e sem cadastro). */
+export async function fetchCdi(timeoutMs = 10000): Promise<Map<number, number>> {
+  const from = new Date(Date.now() - 3650 * DAY_MS + 5 * DAY_MS);
+  const fmt = (d: Date) => `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
+  const url = `https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados?formato=json&dataInicial=${fmt(from)}&dataFinal=${fmt(new Date())}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  if (!res.ok) throw new Error(`Banco Central HTTP ${res.status}`);
+  const map = parseCdiSeries(await res.json());
+  if (map.size < 250) throw new Error('série do CDI incompleta');
+  return map;
 }

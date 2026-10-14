@@ -3,6 +3,7 @@ import { MarketType } from '../../types/crypto';
 import { BatchSummary, BACKTEST_CRITERIA } from '../../services/backtestBatch';
 import { BacktestStats } from '../../services/backtest';
 import { pnlColor } from '../common/format';
+import { B3LabView } from './B3LabView';
 
 interface Job {
   id: number;
@@ -53,6 +54,7 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const [tf, setTf] = useState<'1h' | '4h'>('1h');
   const [top, setTop] = useState(30);
   const [list, setList] = useState<'top' | 'classic2022' | 'b3'>('top');
+  const [lab, setLab] = useState(false);
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -112,6 +114,10 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
         <button onClick={onBack} className="text-sm text-slate-300 underline underline-offset-4">Voltar</button>
       </div>
 
+      <Seg value={lab ? 'lab' : 'bt'} onChange={(v) => setLab(v === 'lab')} options={[['bt', 'Estratégia única'], ['lab', 'Laboratório B3']]} />
+      {lab && <B3LabView />}
+
+      {!lab && <>
       <p className="text-sm text-slate-400 leading-relaxed">
         Aplica a estratégia ao histórico real das maiores moedas, já com taxas e derrapagem
         {!trend && market === 'futures' ? ' e funding' : ''}. Leva alguns minutos.
@@ -254,6 +260,7 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
           </p>
         </>
       )}
+      </>}
     </div>
   );
 };

@@ -59,7 +59,8 @@ import { positionUnrealizedPnl } from '../services/paperTradingService';
 import { summarizeBatch, riskCurve, withoutBest } from '../services/backtestBatch';
 import { detectTrendEntry, updateTrendSignal, canEnter, splitClosed, trendSignalResult, evaluateTrendReadiness, TrendSignal } from '../services/trendSignals';
 import { runTrendBacktest, btcRegimeByDay, TREND_RULES } from '../services/trendBacktest';
-import { parseYahooChart, B3_TICKERS, yahooSymbol } from '../../server/b3Data';
+import { parseYahooChart, parseCdiSeries, B3_TICKERS, yahooSymbol } from '../../server/b3Data';
+import { runLab, simulate, prepareTicker, LAB_STRATEGIES, LAB_WARMUP, TickerData } from '../services/b3Lab';
 import { startBatchJob, getBatchJob } from '../../server/backtestJob';
 import { futuresKlines, futuresPrices, futuresSymbolsFrom, getFuturesProvider, resetFuturesProvider, toOkxInstrument } from '../../server/futuresData';
 import { getState, setState, stateBackend, storageInfo, storageHealth } from '../../server/stateStore';
@@ -1353,6 +1354,70 @@ console.log('\n--- B3 ---');
   assert(bj.params.strategy === 'trend' && bj.params.market === 'spot' && bj.params.tf === '1d', 'B3 força tendência diária só de compras');
   assert(asked.has('^BVSP') && asked.has('PETR4.SA'), 'B3 usa o Ibovespa como filtro e consulta ações com .SA');
   globalThis.fetch = realFetchB;
+}
+
+// ============================================================================
+// LABORATÓRIO DA B3 (carteira vs CDI e Ibovespa)
+// ============================================================================
+console.log('\n--- Laboratório B3 ---');
+{
+  const DAYMS = 86400000;
+  const T0 = 1_400_000_000_000;
+  const mk = (n: number, f: (i: number) => number): CandleData[] => {
+    let p = 100;
+    return Array.from({ length: n }, (_, i) => {
+      const o = p; p = o * (1 + f(i));
+      return { time: String(i), timestamp: T0 + i * DAYMS, open: o, high: Math.max(o, p) * 1.005, low: Math.min(o, p) * 0.995, close: p, volume: 1000 };
+    });
+  };
+  const N = 900;
+  const ibovUp = mk(N, () => 0.0004);
+  const cdiD = Math.pow(1.1, 1 / 252) - 1;
+  const cdiFn = () => cdiD;
+
+  // Mercado em queda: Ibovespa abaixo da média de 200 dias => nenhuma compra, patrimônio = CDI
+  const ibovDown = mk(N, () => -0.0005);
+  const stocks = new Map<string, CandleData[]>();
+  for (let k = 0; k < 8; k++) stocks.set('A' + k, mk(N, (i) => 0.001 + Math.sin(i / (7 + k)) * 0.02));
+  const down = runLab(stocks, ibovDown, { cdiDaily: cdiFn });
+  assert(down.results.every((r) => r.entries === 0), 'Lab: mercado em queda (Ibovespa < média de 200) não compra nada');
+  assert(down.results.every((r) => Math.abs(r.whole.cagr - 10) < 0.3), 'Lab: sem compras, o caixa rende o CDI (~10% ao ano)', String(down.results[0].whole.cagr));
+  assert(down.results.every((r) => !r.passed), 'Lab: não ganhar do CDI reprova');
+
+  // Sem olhar o futuro: mudar o preço depois do dia D não altera o patrimônio até D
+  const D = 500;
+  const alt = new Map<string, CandleData[]>();
+  for (const [k, c] of stocks) alt.set(k, c.map((x, i) => (i > D ? { ...x, open: x.open * 3, high: x.high * 3, low: x.low * 3, close: x.close * 3 } : x)));
+  const prep = (m: Map<string, CandleData[]>) => { const d = new Map<string, TickerData>(); for (const [k, c] of m) d.set(k, prepareTicker(c, ibovUp)); return d; };
+  const base = prep(stocks), changed = prep(alt);
+  let same = true;
+  for (const st of LAB_STRATEGIES) {
+    const a = simulate(st, base, ibovUp, { cdiDaily: cdiFn }).equity, b = simulate(st, changed, ibovUp, { cdiDaily: cdiFn }).equity;
+    for (let i = 0; i < D - LAB_WARMUP; i++) if (Math.abs(a[i] - b[i]) > 1e-9) same = false;
+  }
+  assert(same, 'Lab: nenhuma estratégia usa preços futuros (patrimônio igual até o dia alterado)');
+
+  // Custos reduzem o resultado
+  const free = simulate(LAB_STRATEGIES[1], base, ibovUp, { cdiDaily: cdiFn, cost: 0 });
+  const paid = simulate(LAB_STRATEGIES[1], base, ibovUp, { cdiDaily: cdiFn, cost: 0.01 });
+  assert(free.equity[free.equity.length - 1] > paid.equity[paid.equity.length - 1], 'Lab: custos por lado reduzem o patrimônio');
+
+  // Tendência forte nas ações: momentum compra, tem entradas e dados completos
+  const strong = new Map<string, CandleData[]>();
+  for (let k = 0; k < 8; k++) strong.set('S' + k, mk(N, (i) => 0.0005 * (k + 1) + Math.sin(i / 11 + k) * 0.015));
+  const up = runLab(strong, ibovUp, { cdiDaily: cdiFn });
+  const mom = up.results.find((r) => r.id === 'momentum')!;
+  assert(mom.entries > 0 && mom.equity.length === N - LAB_WARMUP && up.results.length === 3, 'Lab: roda as 3 candidatas e gera curva de patrimônio');
+  assert(mom.checks.length === 5 && up.benchmarks.whole.ibov > 0, 'Lab: 5 critérios e referências (CDI e Ibovespa)');
+
+  // Ações com dias sem negociação não quebram o alinhamento
+  const gap = mk(N, () => 0.001).filter((_, i) => i % 7 !== 3);
+  const t = prepareTicker(gap, ibovUp);
+  assert(t.c.length === N && t.traded.filter((x) => !x).length === Math.floor(N / 7) + (N % 7 > 3 ? 1 : 0), 'Lab: dias sem negociação repetem o último preço e ficam marcados');
+
+  // CDI do Banco Central
+  const cdi = parseCdiSeries([{ data: '02/01/2020', valor: '0.017452' }, { data: 'x', valor: '1' }, { data: '03/01/2020', valor: 'abc' }]);
+  assert(cdi.size === 1 && Math.abs([...cdi.values()][0] - 0.00017452) < 1e-12, 'CDI: lê data dd/mm/aaaa e converte % ao dia em fração');
 }
 
 // ============================================================================
