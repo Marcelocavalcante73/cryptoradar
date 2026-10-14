@@ -9,6 +9,7 @@ import { runTrendBacktest } from '../src/services/trendBacktest';
 import { summarizeBatch, BatchSummary } from '../src/services/backtestBatch';
 import { buildUniverse } from './universe';
 import { fetchHistory } from './history';
+import { B3_TICKERS, IBOV_SYMBOL, fetchB3History } from './b3Data';
 
 /**
  * Lista FIXA das grandes moedas de 2022, definida antes de ver resultados da estratégia de tendência.
@@ -17,7 +18,7 @@ import { fetchHistory } from './history';
 export const CLASSIC_2022 = ['BTC', 'ETH', 'BNB', 'XRP', 'ADA', 'DOGE', 'SOL', 'TRX', 'DOT', 'LTC', 'AVAX', 'LINK', 'ATOM', 'XLM', 'ETC', 'BCH', 'UNI'];
 
 export interface BatchParams {
-  list?: 'top' | 'classic2022';
+  list?: 'top' | 'classic2022' | 'b3';
   strategy: 'signals' | 'trend'; // signals: confluência de indicadores; trend: rompimento de 55 dias (diário, só spot)
   market: MarketType;
   tf: '1h' | '4h' | '1d';
@@ -51,8 +52,11 @@ export function startBatchJob(requested: BatchParams): BatchJob {
   if (current && current.status === 'running') return current;
   // A estratégia de tendência é sempre diária e só spot (compras), qualquer que seja o pedido
   const base: BatchParams = requested.strategy === 'trend' ? { ...requested, market: 'spot', tf: '1d' } : requested;
-  // Lista fixa de 2022 existe só para spot
-  const params: BatchParams = base.list === 'classic2022' ? { ...base, market: 'spot' } : base;
+  // B3 só existe com a estratégia de tendência; a lista fixa de 2022 existe só para spot
+  const b3 = requested.list === 'b3';
+  const params: BatchParams = b3
+    ? { ...base, list: 'b3', strategy: 'trend', market: 'spot', tf: '1d' }
+    : base.list === 'classic2022' ? { ...base, market: 'spot' } : base;
 
   const job: BatchJob = {
     id: ++counter, params, status: 'running', done: 0, total: 0, startedAt: Date.now(), failedSymbols: []
@@ -61,12 +65,17 @@ export function startBatchJob(requested: BatchParams): BatchJob {
 
   (async () => {
     try {
-      const coins = params.list === 'classic2022'
+      const coins = params.list === 'b3'
+        ? B3_TICKERS.map((t, i) => ({ rank: i + 1, baseAsset: t, name: t, symbol: t, marketCap: 0 }))
+        : params.list === 'classic2022'
         ? CLASSIC_2022.map((b, i) => ({ rank: i + 1, baseAsset: b, name: b, symbol: `${b}USDT`, marketCap: 0 }))
         : (await buildUniverse(params.market)).coins.slice(0, params.top);
       const trend = params.strategy === 'trend';
       // Filtro de mercado da estratégia de tendência: histórico diário do Bitcoin
-      const btc = trend ? await fetchHistory('BTCUSDT', '1d', params.bars, 1, 'spot') : [];
+      // Na B3 o filtro de mercado é o Ibovespa acima da média de 200 dias
+      const btc = params.list === 'b3'
+        ? await fetchB3History(IBOV_SYMBOL)
+        : trend ? await fetchHistory('BTCUSDT', '1d', params.bars, 1, 'spot') : [];
       job.total = coins.length;
       const results: ReturnType<typeof runBacktest>[] = [];
 
@@ -75,7 +84,9 @@ export function startBatchJob(requested: BatchParams): BatchJob {
         while (i < coins.length) {
           const coin = coins[i++];
           try {
-            const candles = await fetchHistory(coin.symbol, trend ? '1d' : params.tf, params.bars, 1, params.market);
+            const candles = params.list === 'b3'
+              ? await fetchB3History(coin.symbol)
+              : await fetchHistory(coin.symbol, trend ? '1d' : params.tf, params.bars, 1, params.market);
             results.push(
               trend
                 ? runTrendBacktest(candles, btc, coin.symbol)
