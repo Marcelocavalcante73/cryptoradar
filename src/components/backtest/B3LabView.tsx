@@ -59,7 +59,7 @@ export const B3LabView: React.FC = () => {
   return (
     <div className="space-y-4">
       <p className="text-sm text-slate-400 leading-relaxed">
-        Compara 3 estratégias de carteira (até 5 ações, caixa rendendo CDI) com o CDI e o Ibovespa. Só 3 candidatas, com regras fixas e metade do período
+        Compara 4 estratégias de carteira (até 5 ações, caixa rendendo CDI) com o CDI e o Ibovespa. Só 4 candidatas, com regras fixas e metade do período
         testada separada, para não ajustar até dar certo. Só passa se ganhar do CDI nas duas metades.
       </p>
       <button onClick={run} disabled={running} className="w-full bg-slate-100 text-slate-900 font-semibold py-3.5 rounded-lg text-base disabled:opacity-40">
