@@ -6,7 +6,7 @@ import { pnlColor } from '../common/format';
 
 interface Job {
   id: number;
-  params: { list?: 'top' | 'classic2022'; strategy?: 'signals' | 'trend'; market: MarketType; tf: '1h' | '4h' | '1d'; top: number; bars: number };
+  params: { list?: 'top' | 'classic2022' | 'b3'; strategy?: 'signals' | 'trend'; market: MarketType; tf: '1h' | '4h' | '1d'; top: number; bars: number };
   status: 'running' | 'done' | 'error';
   done: number;
   total: number;
@@ -52,7 +52,7 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const [market, setMarket] = useState<MarketType>('spot');
   const [tf, setTf] = useState<'1h' | '4h'>('1h');
   const [top, setTop] = useState(30);
-  const [list, setList] = useState<'top' | 'classic2022'>('top');
+  const [list, setList] = useState<'top' | 'classic2022' | 'b3'>('top');
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -88,7 +88,7 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
       const r = await fetch('/api/backtest/batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ strategy, market, tf, top, list, bars: strategy === 'trend' ? 1500 : 3000 })
+        body: JSON.stringify({ strategy: b3 ? 'trend' : strategy, market, tf, top, list, bars: trend ? 1500 : 3000 })
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j?.error || `Erro ${r.status}`);
@@ -99,7 +99,8 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     }
   };
 
-  const trend = strategy === 'trend';
+  const b3 = list === 'b3';
+  const trend = strategy === 'trend' || b3;
   const running = job?.status === 'running';
   const sum = job?.status === 'done' ? job.summary : undefined;
   const a = sum?.aggregate;
@@ -119,10 +120,10 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
       <section className={`${card} space-y-3`}>
         <div>
           <div className="text-sm text-slate-400 mb-1.5">Estratégia</div>
-          <Seg value={strategy} onChange={(v) => setStrategy(v as 'signals' | 'trend')} options={[['signals', 'Sinais por indicadores'], ['trend', 'Rompimento de 55 dias']]} />
+          <Seg value={b3 ? 'trend' : strategy} onChange={(v) => setStrategy(v as 'signals' | 'trend')} options={[['signals', 'Sinais por indicadores'], ['trend', 'Rompimento de 55 dias']]} />
           {trend && (
             <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-              Velas diárias, só compras. Entra quando o fechamento passa da máxima dos 55 dias anteriores e o Bitcoin está acima da média de 200 dias.
+              Velas diárias, só compras. Entra quando o fechamento passa da máxima dos 55 dias anteriores e {b3 ? 'o Ibovespa' : 'o Bitcoin'} está acima da média de 200 dias.
               Stop de 2 ATR; sai quando o fechamento perde a mínima dos 20 dias. Sem alvo fixo. Regras fixas, sem ajuste.
             </p>
           )}
@@ -140,9 +141,14 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
           </>
         )}
         <div>
-          <div className="text-sm text-slate-400 mb-1.5">Moedas testadas</div>
-          <Seg value={list === 'classic2022' ? 'c22' : String(top)} onChange={(v) => { if (v === 'c22') setList('classic2022'); else { setList('top'); setTop(Number(v)); } }}
-            options={[['10', '10'], ['30', '30'], ['50', '50'], ['c22', 'Grandes de 2022']]} />
+          <div className="text-sm text-slate-400 mb-1.5">Ativos testados</div>
+          <Seg value={list === 'classic2022' ? 'c22' : b3 ? 'b3' : String(top)} onChange={(v) => { if (v === 'c22') setList('classic2022'); else if (v === 'b3') { setList('b3'); setStrategy('trend'); } else { setList('top'); setTop(Number(v)); } }}
+            options={[['10', '10'], ['30', '30'], ['50', '50'], ['c22', 'Grandes de 2022'], ['b3', 'B3 (ações)']]} />
+          {b3 && (
+            <p className="text-xs text-slate-500 mt-2 leading-relaxed">
+              Lista fixa de 40 ações líquidas da B3, definida antes dos resultados, com preços do Yahoo Finance ajustados por proventos e cerca de 8 anos de histórico. Filtro de mercado: Ibovespa acima da média de 200 dias. Custos: taxa e derrapagem como nas criptos (conservadores para ações).
+            </p>
+          )}
           {list === 'classic2022' && (
             <p className="text-xs text-slate-500 mt-2 leading-relaxed">
               Lista fixa das 17 maiores moedas de 2022 (BTC, ETH, BNB, XRP, ADA, DOGE, SOL, TRX, DOT, LTC, AVAX, LINK, ATOM, XLM, ETC, BCH, UNI), definida antes dos resultados. Evita escolher só as moedas que subiram até hoje. Só spot.
@@ -176,7 +182,7 @@ export const BacktestView: React.FC<{ onBack: () => void }> = ({ onBack }) => {
       {sum && a && job && (
         <>
           <p className="text-xs text-slate-500">
-            Resultado de {job.params.strategy === 'trend' ? 'Rompimento de 55 dias (spot, diário)' : `${job.params.market === 'futures' ? 'Futuros' : 'Spot'} · ${job.params.tf}`} · {job.params.list === 'classic2022' ? '17 moedas (Grandes de 2022)' : `${job.params.top} moedas`}
+            Resultado de {job.params.strategy === 'trend' ? 'Rompimento de 55 dias (spot, diário)' : `${job.params.market === 'futures' ? 'Futuros' : 'Spot'} · ${job.params.tf}`} · {job.params.list === 'b3' ? '40 ações da B3' : job.params.list === 'classic2022' ? '17 moedas (Grandes de 2022)' : `${job.params.top} moedas`}
           </p>
 
           <section className={card}>

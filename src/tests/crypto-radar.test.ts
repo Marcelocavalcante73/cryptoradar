@@ -59,6 +59,7 @@ import { positionUnrealizedPnl } from '../services/paperTradingService';
 import { summarizeBatch, riskCurve, withoutBest } from '../services/backtestBatch';
 import { detectTrendEntry, updateTrendSignal, canEnter, splitClosed, trendSignalResult, evaluateTrendReadiness, TrendSignal } from '../services/trendSignals';
 import { runTrendBacktest, btcRegimeByDay, TREND_RULES } from '../services/trendBacktest';
+import { parseYahooChart, B3_TICKERS, yahooSymbol } from '../../server/b3Data';
 import { startBatchJob, getBatchJob } from '../../server/backtestJob';
 import { futuresKlines, futuresPrices, futuresSymbolsFrom, getFuturesProvider, resetFuturesProvider, toOkxInstrument } from '../../server/futuresData';
 import { getState, setState, stateBackend, storageInfo, storageHealth } from '../../server/stateStore';
@@ -1306,6 +1307,52 @@ console.log('\n--- Tendência: rompimento de 55 dias ---');
   assert(cj.status === 'done' && cj.total === 17 && cj.done === 17, 'Lista fixa de 2022 testa as 17 moedas sem consultar o ranking', `${cj.status} ${cj.done}/${cj.total} ${cj.error ?? ''}`);
   assert(symbolsAsked.has('BTCUSDT') && symbolsAsked.has('ETCUSDT') && symbolsAsked.has('LTCUSDT'), 'A lista inclui moedas que ficaram para trás (ETC, LTC) e o BTC');
   globalThis.fetch = realFetchC;
+}
+
+// ============================================================================
+// B3 (YAHOO FINANCE)
+// ============================================================================
+console.log('\n--- B3 ---');
+{
+  const DAYMS = 86400000;
+  const t0 = 1_500_000_000;
+  const chart = (n: number, drift: number) => {
+    let p = 20;
+    const ts: number[] = [], open: (number | null)[] = [], high: number[] = [], low: number[] = [], close: number[] = [], volume: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const o = p; p *= 1 + drift + Math.sin(i / 30) * 0.01;
+      ts.push(t0 + i * 86400); open.push(o); high.push(Math.max(o, p) * 1.01); low.push(Math.min(o, p) * 0.99); close.push(p); volume.push(1000);
+    }
+    return { chart: { result: [{ timestamp: ts, indicators: { quote: [{ open, high, low, close, volume }], adjclose: [{ adjclose: close.map((c) => c * 0.9) }] } }] } };
+  };
+  const base = chart(10, 0.001);
+  const bad = JSON.parse(JSON.stringify(base));
+  bad.chart.result[0].indicators.quote[0].open[3] = null; // dia sem negociação
+  const parsed = parseYahooChart(bad);
+  assert(parsed.length === 9, 'Yahoo: dias sem preço são descartados', String(parsed.length));
+  assert(Math.abs(parsed[0].close / base.chart.result[0].indicators.quote[0].close[0] - 0.9) < 1e-9, 'Yahoo: preços ajustados por proventos (fechamento ajustado)');
+  assert(parsed.every((c, i) => c.timestamp % DAYMS === 0 && (i === 0 || c.timestamp > parsed[i - 1].timestamp)), 'Yahoo: datas diárias crescentes');
+  assert(parseYahooChart({}).length === 0 && parseYahooChart(null).length === 0, 'Yahoo: resposta vazia ou inválida não quebra');
+  assert(yahooSymbol('PETR4') === 'PETR4.SA' && yahooSymbol('^BVSP') === '^BVSP', 'Yahoo: sufixo .SA nos tickers e índice sem sufixo');
+  assert(new Set(B3_TICKERS).size === B3_TICKERS.length && B3_TICKERS.length === 40, 'Lista fixa da B3 tem 40 tickers sem repetição');
+
+  const realFetchB = globalThis.fetch;
+  const asked = new Set<string>();
+  globalThis.fetch = ((url: any) => {
+    const u = String(url);
+    if (u.includes('query1.finance.yahoo.com')) {
+      asked.add(decodeURIComponent(u.split('/chart/')[1].split('?')[0]));
+      return Promise.resolve(new Response(JSON.stringify(chart(900, 0.002)), { status: 200 }));
+    }
+    return Promise.reject(new Error('url inesperada: ' + u));
+  }) as typeof fetch;
+  startBatchJob({ list: 'b3', strategy: 'signals', market: 'futures', tf: '1h', top: 30, bars: 700 });
+  for (let i = 0; i < 400 && getBatchJob()?.status === 'running'; i++) await new Promise((r) => setTimeout(r, 50));
+  const bj = getBatchJob()!;
+  assert(bj.status === 'done' && bj.total === 40 && bj.done === 40, 'Backtest da B3 testa as 40 ações', `${bj.status} ${bj.done}/${bj.total} ${bj.error ?? ''}`);
+  assert(bj.params.strategy === 'trend' && bj.params.market === 'spot' && bj.params.tf === '1d', 'B3 força tendência diária só de compras');
+  assert(asked.has('^BVSP') && asked.has('PETR4.SA'), 'B3 usa o Ibovespa como filtro e consulta ações com .SA');
+  globalThis.fetch = realFetchB;
 }
 
 // ============================================================================

@@ -365,7 +365,7 @@ app.post('/api/backtest/batch', (req: Request, res: Response) => {
   const top = Math.min(50, Math.max(5, Math.round(Number(b.top) || 30)));
   const bars = Math.min(trend ? 2000 : 4000, Math.max(500, Math.round(Number(b.bars) || (trend ? 1500 : 3000))));
   // A estratégia de tendência é só para spot (compras)
-  const job = startBatchJob({ list: b.list === 'classic2022' ? 'classic2022' : 'top', strategy: trend ? 'trend' : 'signals', market: trend ? 'spot' : parseMarket(b.market), tf, top, bars });
+  const job = startBatchJob({ list: b.list === 'classic2022' ? 'classic2022' : b.list === 'b3' ? 'b3' : 'top', strategy: trend || b.list === 'b3' ? 'trend' : 'signals', market: trend || b.list === 'b3' ? 'spot' : parseMarket(b.market), tf, top, bars });
   res.status(202).json(job);
 });
 
