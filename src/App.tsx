@@ -22,6 +22,7 @@ import { BacktestView } from './components/backtest/BacktestView';
 import { TrendView, TrendInfo } from './components/trend/TrendView';
 import { B3Info, B3SignalsView, B3TrendView, B3TrackView } from './components/b3/B3Views';
 import { AiSwingView } from './components/b3/AiSwingView';
+import { RobotView } from './components/robot/RobotView';
 import { TrendSignal } from './services/trendSignals';
 import { AccessGate } from './components/common/AccessGate';
 import { localStore } from './services/localStore';
@@ -358,7 +359,7 @@ export default function App() {
       goTo('b3signals');
     } else if (next === 'futures') {
       changeMarket('futures');
-      if (activeTab === 'trend' || activeTab === 'b3signals' || activeTab === 'b3trend' || activeTab === 'b3track' || activeTab === 'b3ai') {
+      if (activeTab === 'trend' || activeTab === 'robot' || activeTab === 'b3signals' || activeTab === 'b3trend' || activeTab === 'b3track' || activeTab === 'b3ai') {
         goTo('signals');
       }
     } else {
@@ -584,6 +585,7 @@ export default function App() {
             />
           )}
 
+          {!isB3 && activeTab === 'robot' && <RobotView />}
           {!isB3 && activeTab === 'trend' && (
             <TrendView
               trend={trend}
