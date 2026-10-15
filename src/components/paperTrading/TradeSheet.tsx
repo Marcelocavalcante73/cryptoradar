@@ -124,34 +124,38 @@ export const TradeSheet: React.FC<TradeSheetProps> = ({
     if (!res.success) setError(res.error || 'Não foi possível abrir a simulação.');
   };
 
-  const field = 'w-full bg-[#0f1115] border border-[#2a2f3a] rounded-lg px-3 py-3 text-base text-slate-100 tabular-nums focus:outline-none focus:border-slate-400';
-  const seg = (on: boolean) => `px-4 py-2 text-sm rounded-md ${on ? 'bg-[#2a2f3a] text-slate-100' : 'text-slate-400'}`;
+  const field = 'w-full bg-[#0A0F1D] border border-[#1E293B] rounded-lg px-3 py-2 text-sm text-[#F1F5F9] font-mono tabular-nums mt-1 focus:outline-none focus:border-[#F5AC37] transition-colors';
+  const seg = (on: boolean) => `px-3.5 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer ${on ? 'bg-[#1E293B] text-[#F5AC37] border border-[#2E405E]/50 shadow-sm' : 'text-[#94A3B8] hover:text-[#F1F5F9]'}`;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60" onClick={onClose}>
-      <div className="w-full max-w-md max-h-[92vh] overflow-y-auto bg-[#161920] border border-[#23272f] rounded-t-2xl sm:rounded-2xl p-5 safe-area-pb" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-xs" onClick={onClose}>
+      <div className="w-full max-w-md max-h-[92vh] overflow-y-auto bg-[#10192A] border border-[#1E293B] rounded-t-2xl sm:rounded-2xl p-5 safe-area-pb shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h3 className="text-lg font-semibold text-slate-100">{label} {asset.baseAsset}{futures ? ' · Futuros' : ''}</h3>
-            <p className="text-sm text-slate-400">Simulação · preço atual {fmtPrice(price)}</p>
+            <h3 className="text-base font-bold text-[#F1F5F9] flex items-center gap-1.5">
+              <span>{label} {asset.baseAsset}</span>
+              <span className="text-xs text-[#94A3B8] font-mono">/USDT</span>
+              {futures && <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1E293B] text-[#F5AC37] border border-[#2E405E]/40 font-mono font-medium">FUTUROS</span>}
+            </h3>
+            <p className="text-xs text-[#94A3B8] font-mono mt-0.5">Preço atual: {fmtPrice(price)}</p>
           </div>
-          <button onClick={onClose} className="p-2 text-slate-400" aria-label="Fechar"><X className="w-5 h-5" /></button>
+          <button onClick={onClose} className="p-1.5 text-[#94A3B8] hover:text-[#F1F5F9] rounded-lg cursor-pointer" aria-label="Fechar"><X className="w-5 h-5" /></button>
         </div>
 
         {futures && !signal && (
-          <div className="inline-flex bg-[#0f1115] border border-[#23272f] rounded-lg p-0.5 mb-4">
+          <div className="inline-flex bg-[#0A0F1D] border border-[#1E293B] rounded-lg p-0.5 mb-4 shadow-xs">
             <button className={seg(direction === 'LONG')} onClick={() => changeDirection('LONG')}>Long (compra)</button>
             <button className={seg(direction === 'SHORT')} onClick={() => changeDirection('SHORT')}>Short (venda)</button>
           </div>
         )}
 
         {Math.abs(moved) >= 1 && (
-          <p className="text-sm text-amber-300 mb-3">O preço já se moveu {moved > 0 ? '+' : '−'}{Math.abs(moved).toFixed(1)}% desde o sinal.</p>
+          <p className="text-xs text-[#F5AC37] mb-3">O preço já se moveu {moved > 0 ? '+' : '−'}{Math.abs(moved).toFixed(1)}% desde o sinal.</p>
         )}
 
         {futures && (
           <div className="mb-4">
-            <div className="text-sm text-slate-400 mb-1.5">Alavancagem</div>
+            <div className="text-xs text-[#94A3B8] mb-1.5">Alavancagem</div>
             <div className="flex gap-1.5 flex-wrap">
               {LEVERAGE_CHOICES.map((l) => (
                 <button
@@ -161,75 +165,75 @@ export const TradeSheet: React.FC<TradeSheetProps> = ({
                     const sz = futuresSizing({ balance, entry: price, stop: stopOk ? st : price * (1 - sign * defaultStopPercent / 100), riskPercent, leverage: l, feeRate: TRADING_FEE_RATE });
                     setAmount(String(Math.max(0, Math.floor(sz.margin))));
                   }}
-                  className={`min-w-[52px] px-3 py-2 rounded-lg text-sm border ${leverage === l ? 'bg-[#2a2f3a] border-[#3a4150] text-slate-100' : 'border-[#23272f] text-slate-400'}`}
+                  className={`min-w-[48px] px-2.5 py-1.5 rounded-lg text-xs font-mono font-medium border transition-colors cursor-pointer ${leverage === l ? 'bg-[#1E293B] border-[#F5AC37] text-[#F5AC37] shadow-xs' : 'border-[#1E293B] bg-[#0A0F1D] text-[#94A3B8] hover:text-[#F1F5F9]'}`}
                 >
                   {l}x
                 </button>
               ))}
             </div>
-            <p className="text-xs text-slate-500 mt-1.5">
-              Segura para este stop: até {safeLev}x. A alavancagem não muda quanto você arrisca (isso vem do stop), só quanta margem fica travada e o quão perto está a liquidação.
+            <p className="text-[11px] text-[#94A3B8] mt-1.5">
+              Alavancagem segura para este stop: até {safeLev}x.
             </p>
           </div>
         )}
 
         <label className="block mb-3">
-          <span className="text-sm text-slate-400">{futures ? 'Margem (USDT)' : 'Valor (USDT)'} · saldo {fmtUsd(balance)}</span>
+          <span className="text-xs text-[#94A3B8]">{futures ? 'Margem (USDT)' : 'Valor da Compra (USDT)'} · saldo {fmtUsd(balance)}</span>
           <input className={field} inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} />
         </label>
 
         <div className={`grid ${noTarget ? 'grid-cols-1' : 'grid-cols-2'} gap-3 mb-4`}>
           <label className="block">
-            <span className="text-sm text-slate-400">Stop</span>
+            <span className="text-xs text-[#F43F5E]">Stop Loss</span>
             <input className={field} inputMode="decimal" value={stop} onChange={(e) => setStop(e.target.value)} />
           </label>
           {!noTarget && (
             <label className="block">
-              <span className="text-sm text-slate-400">Alvo</span>
+              <span className="text-xs text-[#10B981]">Take Profit (Alvo)</span>
               <input className={field} inputMode="decimal" value={target} onChange={(e) => setTarget(e.target.value)} />
             </label>
           )}
         </div>
-        {noTarget && <p className="text-xs text-slate-500 -mt-2 mb-4">Sem alvo fixo: saia pelo stop ou quando o app avisar que fechou abaixo da mínima de 20 dias.</p>}
+        {noTarget && <p className="text-xs text-[#94A3B8] -mt-2 mb-4">Sem alvo fixo: encerramento pela reversão de tendência ou stop móvel.</p>}
 
         {calc && (
-          <div className="grid grid-cols-2 gap-3 mb-4 text-sm">
+          <div className="grid grid-cols-2 gap-2.5 mb-4 text-xs bg-[#0A0F1D] border border-[#1E293B] rounded-lg p-3">
             {futures && (
               <>
                 <div>
-                  <div className="text-slate-500">Tamanho da posição</div>
-                  <div className="text-slate-100 font-medium">{fmtUsd(calc.notional)}</div>
+                  <div className="text-[#94A3B8]">Posição total</div>
+                  <div className="text-[#F1F5F9] font-mono font-medium mt-0.5">{fmtUsd(calc.notional)}</div>
                 </div>
                 <div>
-                  <div className="text-slate-500">Preço de liquidação</div>
-                  <div className={`font-medium ${stopProtects ? 'text-slate-100' : 'text-rose-400'}`}>{fmtPrice(liq)}</div>
+                  <div className="text-[#94A3B8]">Preço liquidação</div>
+                  <div className={`font-mono font-medium mt-0.5 ${stopProtects ? 'text-[#F1F5F9]' : 'text-[#F43F5E]'}`}>{fmtPrice(liq)}</div>
                 </div>
               </>
             )}
             <div>
-              <div className="text-slate-500">Perda máxima</div>
-              <div className="text-rose-400 font-medium">{fmtUsd(-calc.maxLoss)} ({((calc.maxLoss / balance) * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}% do saldo)</div>
+              <div className="text-[#94A3B8]">Risco máximo</div>
+              <div className="text-[#F43F5E] font-mono font-medium mt-0.5">{fmtUsd(-calc.maxLoss)} ({((calc.maxLoss / balance) * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%)</div>
             </div>
             {!noTarget && (
               <div>
-                <div className="text-slate-500">Ganho no alvo</div>
-                <div className="text-emerald-400 font-medium">{fmtUsd(calc.gain, true)}</div>
+                <div className="text-[#94A3B8]">Lucro estimado</div>
+                <div className="text-[#10B981] font-mono font-medium mt-0.5">{fmtUsd(calc.gain, true)}</div>
               </div>
             )}
           </div>
         )}
 
         {futures && !stopProtects && (
-          <p className="text-sm text-rose-400 mb-3">A liquidação ({fmtPrice(liq)}) vem antes do stop ({fmtPrice(st)}): a posição perderia toda a margem. Reduza a alavancagem.</p>
+          <p className="text-xs text-[#F43F5E] mb-3">A liquidação ({fmtPrice(liq)}) ocorre antes do stop ({fmtPrice(st)}). Reduza a alavancagem.</p>
         )}
-        {error && <p className="text-sm text-rose-400 mb-3">{error}</p>}
+        {error && <p className="text-xs text-[#F43F5E] mb-3">{error}</p>}
 
         <button
           onClick={submit}
           disabled={futures && !stopProtects}
-          className="w-full bg-slate-100 text-slate-900 font-semibold py-3.5 rounded-lg text-base disabled:opacity-40"
+          className="w-full bg-[#F5AC37] hover:bg-[#FBBF24] text-[#0B0F17] font-semibold py-3 rounded-lg text-xs shadow-sm transition-all disabled:opacity-40 cursor-pointer active:scale-95"
         >
-          Confirmar simulação
+          Confirmar Ordem Simulada
         </button>
       </div>
     </div>

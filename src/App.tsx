@@ -502,7 +502,7 @@ export default function App() {
   if (locked) return <AccessGate onUnlocked={() => { void reconcile(); }} />;
 
   return (
-    <div className="min-h-screen bg-[#0f1115] text-slate-100 flex justify-center">
+    <div className="min-h-screen bg-[#0B0F17] text-[#F1F5F9] flex justify-center">
       <div className="w-full max-w-2xl min-h-screen flex flex-col">
         <Header
           isLive={isB3 ? Boolean(b3?.lastScanAt && !b3.lastError) : market === 'futures' ? Boolean(scanInfos.futures?.lastScanAt && !scanInfos.futures.lastError) : isLive}
@@ -514,17 +514,19 @@ export default function App() {
 
         <main className="flex-1 px-4 pt-4">
           {showSection && (
-            <div className="grid grid-cols-3 gap-1 bg-[#161920] border border-[#23272f] rounded-xl p-1 mb-3">
+            <div className="grid grid-cols-3 gap-1 bg-[#10192A] border border-[#1E293B] rounded-xl p-1 mb-3 shadow-inner">
               <button
                 onClick={() => changeSection('spot')}
-                className={`py-2 rounded-lg text-sm font-semibold transition-all flex items-center justify-center gap-1.5 ${
-                  section === 'spot' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-200'
+                className={`py-2 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  section === 'spot'
+                    ? 'bg-[#1E293B] text-[#F5AC37] border border-[#2E405E]/60 shadow-sm'
+                    : 'text-[#94A3B8] hover:text-[#F1F5F9] hover:bg-[#141F36]/40'
                 }`}
               >
                 <span>Spot</span>
                 {openSignalsBy('spot') > 0 && (
                   <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
-                    section === 'spot' ? 'bg-slate-900 text-slate-100' : 'bg-[#23272f] text-slate-300'
+                    section === 'spot' ? 'bg-[#F5AC37] text-[#0B0F17]' : 'bg-[#1E293B] text-[#94A3B8]'
                   }`}>
                     {openSignalsBy('spot')}
                   </span>
@@ -532,14 +534,16 @@ export default function App() {
               </button>
               <button
                 onClick={() => changeSection('futures')}
-                className={`py-2 rounded-lg text-sm font-semibold transition-all flex items-center justify-center gap-1.5 ${
-                  section === 'futures' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-200'
+                className={`py-2 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  section === 'futures'
+                    ? 'bg-[#1E293B] text-[#F5AC37] border border-[#2E405E]/60 shadow-sm'
+                    : 'text-[#94A3B8] hover:text-[#F1F5F9] hover:bg-[#141F36]/40'
                 }`}
               >
                 <span>Futuros</span>
                 {openSignalsBy('futures') > 0 && (
                   <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
-                    section === 'futures' ? 'bg-slate-900 text-slate-100' : 'bg-[#23272f] text-slate-300'
+                    section === 'futures' ? 'bg-[#F5AC37] text-[#0B0F17]' : 'bg-[#1E293B] text-[#94A3B8]'
                   }`}>
                     {openSignalsBy('futures')}
                   </span>
@@ -547,8 +551,10 @@ export default function App() {
               </button>
               <button
                 onClick={() => changeSection('b3')}
-                className={`py-2 rounded-lg text-sm font-semibold transition-all flex items-center justify-center gap-1.5 ${
-                  section === 'b3' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-200'
+                className={`py-2 rounded-lg text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  section === 'b3'
+                    ? 'bg-[#1E293B] text-[#F5AC37] border border-[#2E405E]/60 shadow-sm'
+                    : 'text-[#94A3B8] hover:text-[#F1F5F9] hover:bg-[#141F36]/40'
                 }`}
               >
                 <span>B3</span>

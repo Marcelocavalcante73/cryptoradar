@@ -67,6 +67,18 @@ export type SignalStatus = 'OPEN' | 'TARGET_HIT' | 'STOP_HIT' | 'EXPIRED';
 
 export type SignalDirection = 'LONG' | 'SHORT';
 
+export interface IndicatorMetrics {
+  rsi?: number;
+  rsiZone?: string;
+  macdHistogram?: number;
+  macdSignal?: string;
+  emaTrend?: string;
+  bollingerPosition?: string;
+  volumeRatio?: number;
+  atrPercent?: number;
+  trendStrengthAtr?: number;
+}
+
 export interface TechnicalSignal {
   id: string;
   market?: MarketType;
@@ -83,6 +95,7 @@ export interface TechnicalSignal {
   status: SignalStatus;
   technicalReason: string;
   indicatorsTriggered: string[];
+  indicatorMetrics?: IndicatorMetrics;
   timestamp: string;
   isDemo: boolean; // true = sinal de demonstração (mock); false = gerado pelo motor com dados reais
   disclaimer: string;

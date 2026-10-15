@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Search } from 'lucide-react';
 import { CryptoAsset, MarketType } from '../../types/crypto';
-import { fmtPrice, fmtPct, pnlColor } from '../common/format';
+import { fmtPrice, fmtPct } from '../common/format';
 
 export interface MarketCoin {
   rank: number;
@@ -22,7 +22,6 @@ export const MarketView: React.FC<MarketViewProps> = ({ assets, coins, onSelectC
 
   const rows = useMemo(() => {
     const bySymbol = new Map(assets.map((a) => [a.symbol, a]));
-    // Sem scanner, mostra as moedas já carregadas
     const base: MarketCoin[] = coins.length
       ? coins
       : assets.map((a, i) => ({ rank: i + 1, baseAsset: a.baseAsset, name: a.name, symbol: a.symbol }));
@@ -35,64 +34,79 @@ export const MarketView: React.FC<MarketViewProps> = ({ assets, coins, onSelectC
   const isFutures = market === 'futures';
 
   return (
-    <div className="space-y-4 pb-24">
+    <div className="space-y-3 pb-24 text-[#F1F5F9]">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-slate-100">
-            {isFutures ? 'Mercado de Futuros' : 'Mercado Spot'}
+          <h2 className="text-base font-bold text-[#F1F5F9]">
+            {isFutures ? 'Mercado Futuros USDT-M' : 'Mercado Cripto à Vista'}
           </h2>
-          <p className="text-xs text-slate-400">
-            {isFutures ? 'Contratos perpétuos USDT-M' : coins.length ? 'Ordem por valor de mercado' : 'Top criptomoedas à vista'}
+          <p className="text-xs text-[#94A3B8]">
+            {isFutures ? 'Contratos perpétuos com alavancagem' : coins.length ? 'Top pares por capitalização de mercado' : 'Principais criptoativos'}
           </p>
         </div>
         {isFutures && (
-          <span className="text-[11px] px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium">
-            Perpétuos
+          <span className="text-[11px] px-2 py-0.5 rounded bg-[#F5AC37]/10 text-[#F5AC37] border border-[#F5AC37]/30 font-mono font-medium">
+            PERPÉTUA
           </span>
         )}
       </div>
 
-      <label className="flex items-center gap-2 bg-[#161920] border border-[#23272f] rounded-xl px-3 py-2.5">
-        <Search className="w-4 h-4 text-slate-500" />
+      <label className="flex items-center gap-2 bg-[#10192A] border border-[#1E293B] rounded-xl px-3 py-2 shadow-xs">
+        <Search className="w-4 h-4 text-[#94A3B8]" />
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder={isFutures ? 'Buscar contrato perpétuo (ex: BTC, SOL, ETH)' : 'Buscar moeda'}
-          className="bg-transparent flex-1 text-base text-slate-100 placeholder:text-slate-500 focus:outline-none"
+          placeholder={isFutures ? 'Buscar contrato (ex: BTC, ETH, SOL)' : 'Buscar ativo por ticker ou nome'}
+          className="bg-transparent flex-1 text-xs text-[#F1F5F9] placeholder:text-[#94A3B8] focus:outline-none"
         />
       </label>
 
       {rows.length === 0 ? (
-        <p className="text-sm text-slate-400 text-center py-8">Nenhuma moeda encontrada.</p>
+        <p className="text-xs text-[#94A3B8] text-center py-8">Nenhum par encontrado no radar.</p>
       ) : (
-        <div className="bg-[#161920] border border-[#23272f] rounded-xl divide-y divide-[#23272f]">
-          {rows.map(({ coin, asset }) => (
-            <button
-              key={coin.symbol}
-              disabled={!asset}
-              onClick={() => asset && onSelectCoin(asset)}
-              className="w-full flex items-center justify-between px-4 py-3 text-left disabled:opacity-60"
-            >
-              <div className="flex items-baseline gap-3 min-w-0">
-                <span className="text-xs text-slate-500 w-6 tabular-nums">{coin.rank}</span>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-base font-medium text-slate-100">{coin.baseAsset}</span>
-                    {isFutures && (
-                      <span className="text-[10px] px-1 py-0.2 rounded bg-amber-500/10 text-amber-400 font-mono">PERP</span>
-                    )}
+        <div className="bg-[#10192A] border border-[#1E293B] rounded-xl divide-y divide-[#1E293B] overflow-hidden shadow-sm">
+          {rows.map(({ coin, asset }) => {
+            const hasData = asset && (!asset.isDemoData || asset.price > 0);
+            const chg = asset?.change24h ?? 0;
+            const isPos = chg > 0;
+            const isNeg = chg < 0;
+
+            return (
+              <button
+                key={coin.symbol}
+                disabled={!asset}
+                onClick={() => asset && onSelectCoin(asset)}
+                className="w-full flex items-center justify-between px-3.5 py-3 text-left hover:bg-[#141F36]/50 transition-colors disabled:opacity-60 cursor-pointer"
+              >
+                <div className="flex items-baseline gap-2.5 min-w-0">
+                  <span className="text-xs text-[#94A3B8] w-5 tabular-nums font-mono">{coin.rank}</span>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm font-bold text-[#F1F5F9]">{coin.baseAsset}</span>
+                      <span className="text-[11px] text-[#94A3B8]">/USDT</span>
+                      {isFutures && (
+                        <span className="text-[10px] px-1 py-0.2 rounded bg-[#1E293B] text-[#94A3B8] border border-[#2E405E]/40 font-mono">PERP</span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-[#94A3B8] truncate">{coin.name}</div>
                   </div>
-                  <div className="text-xs text-slate-500 truncate">{coin.name}</div>
                 </div>
-              </div>
-              <div className="text-right">
-                <div className="text-base text-slate-100 tabular-nums">{asset && (!asset.isDemoData || asset.price > 0) ? `$${fmtPrice(asset.price)}` : '—'}</div>
-                <div className={`text-sm tabular-nums ${asset && (!asset.isDemoData || asset.change24h !== 0) ? pnlColor(asset.change24h) : 'text-slate-500'}`}>
-                  {asset && (!asset.isDemoData || asset.change24h !== 0) ? fmtPct(asset.change24h) : ''}
+
+                <div className="text-right">
+                  <div className="text-sm font-mono font-medium text-[#F1F5F9] tabular-nums">
+                    {hasData ? `$${fmtPrice(asset.price)}` : '—'}
+                  </div>
+                  <div
+                    className={`text-xs font-mono tabular-nums font-medium ${
+                      isPos ? 'text-[#10B981]' : isNeg ? 'text-[#F43F5E]' : 'text-[#94A3B8]'
+                    }`}
+                  >
+                    {hasData ? fmtPct(chg) : ''}
+                  </div>
                 </div>
-              </div>
-            </button>
-          ))}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

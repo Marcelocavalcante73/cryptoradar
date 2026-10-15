@@ -235,7 +235,12 @@ export function createScanner(market: MarketType) {
       for (const s of fresh.slice(0, MAX_ALERTS_PER_SCAN)) {
         s.alerted = await sendTelegram(formatTelegramAlert(s, market));
       }
-      state.signals = [...fresh, ...state.signals].slice(0, MAX_HISTORY);
+      const nowTs = Date.now();
+      const MAX_AGE_MS = 7 * 24 * 3600e3;
+      state.signals = [...fresh, ...state.signals]
+        .filter((s) => s.status === 'OPEN' || (nowTs - (s.closedAt || s.createdAt || 0)) <= MAX_AGE_MS)
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+        .slice(0, MAX_HISTORY);
 
       state.scannedPairs = jobs.length - failed;
       state.failedPairs = failed;

@@ -19,11 +19,17 @@ export const AccessGate: React.FC<{ onUnlocked: () => void }> = ({ onUnlocked })
   };
 
   return (
-    <div className="min-h-screen bg-[#0f1115] text-slate-100 flex items-center justify-center px-6">
-      <form onSubmit={submit} className="w-full max-w-sm bg-[#161920] border border-[#23272f] rounded-xl p-5 space-y-4">
+    <div className="min-h-screen bg-[#0B0E11] text-[#EAECEF] flex items-center justify-center px-6">
+      <form onSubmit={submit} className="w-full max-w-sm bg-[#181A20] border border-[#2B313A] rounded-xl p-6 space-y-4 shadow-xl">
         <div>
-          <h1 className="text-lg font-semibold">CryptoRadar</h1>
-          <p className="text-sm text-slate-400 mt-1 leading-relaxed">Digite a chave de acesso para ver a sua carteira e o seu histórico.</p>
+          <div className="flex items-center gap-2 mb-1">
+            <div className="w-2.5 h-2.5 rounded-sm bg-[#F0B90B]" />
+            <h1 className="text-lg font-bold tracking-tight">
+              <span className="text-[#F0B90B]">Crypto</span>
+              <span className="text-[#EAECEF]">Radar</span>
+            </h1>
+          </div>
+          <p className="text-xs text-[#848E9C] leading-relaxed">Digite a chave de acesso para sincronizar a carteira e o motor de sinais.</p>
         </div>
         <input
           type="password"
@@ -31,11 +37,14 @@ export const AccessGate: React.FC<{ onUnlocked: () => void }> = ({ onUnlocked })
           value={value}
           onChange={(e) => setValue(e.target.value)}
           placeholder="Chave de acesso"
-          className="w-full bg-[#0f1115] border border-[#2a2f3a] rounded-lg px-3 py-3 text-base text-slate-100 focus:outline-none focus:border-slate-400"
+          className="w-full bg-[#121418] border border-[#2B313A] rounded-lg px-3 py-2.5 text-sm text-[#EAECEF] focus:outline-none focus:border-[#F0B90B]"
         />
-        {error && <p className="text-sm text-rose-400">{error}</p>}
-        <button disabled={busy || !value.trim()} className="w-full bg-slate-100 text-slate-900 font-semibold py-3 rounded-lg disabled:opacity-40">
-          {busy ? 'Verificando…' : 'Entrar'}
+        {error && <p className="text-xs text-[#F6465D]">{error}</p>}
+        <button
+          disabled={busy || !value.trim()}
+          className="w-full bg-[#F0B90B] hover:bg-[#FCD535] text-black font-semibold text-xs py-2.5 rounded-lg disabled:opacity-40 transition-colors cursor-pointer shadow-sm"
+        >
+          {busy ? 'Verificando…' : 'Acessar Terminal'}
         </button>
       </form>
     </div>

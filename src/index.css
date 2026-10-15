@@ -2,12 +2,17 @@
 
 @layer base {
   body {
-    background-color: #0f1115;
+    background-color: #0B0F17;
     color: #F1F5F9;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     overflow-x: hidden;
+  }
+
+  ::selection {
+    background-color: #F5AC37;
+    color: #0B0F17;
   }
 }
 

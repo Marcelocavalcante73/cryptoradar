@@ -32,7 +32,7 @@ interface TrendViewProps {
   onSelectCoinBySymbol: (symbol: string) => void;
 }
 
-const card = 'bg-[#161920] border border-[#23272f] rounded-xl p-4';
+const card = 'bg-[#181A20] border border-[#2B313A] rounded-xl p-4';
 
 export const TrendView: React.FC<TrendViewProps> = ({ trend, assets, account, onSimulate, onClosePosition, onSelectCoinBySymbol }) => {
   const price = useMemo(() => new Map(assets.filter((a) => !a.isDemoData).map((a) => [a.symbol, a.price])), [assets]);

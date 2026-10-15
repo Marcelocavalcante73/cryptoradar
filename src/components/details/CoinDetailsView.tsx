@@ -78,12 +78,12 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, market 
         </div>
       ) : live ? (
         <>
-          <div className="inline-flex bg-[#161920] border border-[#23272f] rounded-lg p-0.5">
+          <div className="inline-flex bg-[#181A20] border border-[#2B313A] rounded-lg p-0.5">
             {TIMEFRAMES.map((tf) => (
               <button
                 key={tf}
                 onClick={() => setTimeframe(tf)}
-                className={`px-3.5 py-1.5 text-sm rounded-md ${timeframe === tf ? 'bg-[#2a2f3a] text-slate-100' : 'text-slate-400'}`}
+                className={`px-3 py-1.5 text-xs font-mono rounded-md transition-colors cursor-pointer ${timeframe === tf ? 'bg-[#2B313A] text-[#F0B90B] font-semibold' : 'text-[#848E9C] hover:text-[#EAECEF]'}`}
               >
                 {tf}
               </button>
@@ -91,20 +91,20 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, market 
           </div>
 
           <TvChart candles={candles} levels={levels} tvSymbol={market === 'futures' ? `BINANCE:${asset.symbol}.P` : `BINANCE:${asset.symbol}`} height={340} />
-          <div className="bg-[#161920] border border-[#23272f] rounded-xl p-4">
-            <div className="text-sm text-slate-400">Leitura técnica ({timeframe})</div>
-            <div className={`text-lg font-semibold ${verdictColor}`}>{diagnosis.summary.verdict}</div>
-            <div className="text-sm text-slate-400 mt-1">
-              {diagnosis.summary.buyCount} indicadores a favor da compra · {diagnosis.summary.sellCount} da venda ·{' '}
+          <div className="bg-[#181A20] border border-[#2B313A] rounded-xl p-4 shadow-sm">
+            <div className="text-xs text-[#848E9C]">Leitura Técnica ({timeframe})</div>
+            <div className={`text-base font-bold mt-0.5 ${verdictColor}`}>{diagnosis.summary.verdict}</div>
+            <div className="text-xs text-[#848E9C] mt-1 font-mono">
+              {diagnosis.summary.buyCount} compras · {diagnosis.summary.sellCount} vendas ·{' '}
               {diagnosis.summary.neutralCount} neutros
             </div>
-            <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-              RSI, posição do preço nas médias de 20 e 50 períodos e MACD. É uma leitura de apoio, não um sinal de entrada.
+            <p className="text-[11px] text-[#848E9C] mt-2 leading-relaxed">
+              RSI, posição do preço nas médias móveis de 20 e 50 períodos e histograma MACD.
             </p>
           </div>
         </>
       ) : (
-        <p className="text-sm text-slate-400 bg-[#161920] border border-[#23272f] rounded-xl p-4">
+        <p className="text-xs text-[#848E9C] bg-[#181A20] border border-[#2B313A] rounded-xl p-4">
           Não foi possível carregar o gráfico real agora. Tente atualizar em instantes.
         </p>
       )}
@@ -114,9 +114,9 @@ export const CoinDetailsView: React.FC<CoinDetailsViewProps> = ({ asset, market 
           <div className="max-w-2xl mx-auto">
             <button
               onClick={() => onOpenTradeModal(asset)}
-              className="w-full bg-slate-100 text-slate-900 font-semibold py-3.5 rounded-lg text-base"
+              className="w-full bg-[#F0B90B] hover:bg-[#FCD535] text-black font-semibold py-3 rounded-lg text-xs shadow-md transition-all cursor-pointer active:scale-95"
             >
-              {market === 'futures' ? `Simular operação em ${asset.baseAsset}` : `Simular compra de ${asset.baseAsset}`}
+              {market === 'futures' ? `Simular Ordem em ${asset.baseAsset} Futuros` : `Simular Compra de ${asset.baseAsset}`}
             </button>
           </div>
         </div>

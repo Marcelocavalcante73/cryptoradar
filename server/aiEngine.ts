@@ -33,6 +33,7 @@ export interface AiEngineSignal {
   status: 'OPEN' | 'TARGET_HIT' | 'STOP_HIT' | 'EXPIRED';
   technicalReason: string;
   indicatorsTriggered: string[];
+  indicatorMetrics?: any;
   timestamp: string;
   createdAt: number;
   closedAt?: number;
@@ -346,6 +347,8 @@ Responda ESTRITAMENTE em JSON:
     });
     state.blocked = blocked;
 
+    const rowMap = new Map(rows.map((r) => [r.symbol, r]));
+
     const created: AiEngineSignal[] = approved.map((a, idx) => {
       const s = a.raw;
       const diffTarget = Math.abs(a.target - a.entry);
@@ -354,6 +357,28 @@ Responda ESTRITAMENTE em JSON:
       const strategy: AiEngineSignal['strategy'] = s.strategy === 'AI_ENGINE_BREAKOUT' || s.strategy === 'AI_ENGINE_REVERSAL' ? s.strategy : 'AI_ENGINE_MOMENTUM';
       const thesis = String(s.thesis || 'Confluência de tendência e risco/retorno favorável detectada pelo modelo.').slice(0, 400);
       const level = s.riskLevel === 'BAIXO' || s.riskLevel === 'ALTO' ? s.riskLevel : 'MEDIO';
+      const row = rowMap.get(a.symbol);
+
+      const indList: string[] = [
+        `Confiança ${a.confidence}%`,
+        `R:R 1:${rr}`,
+        row ? `RSI(14) ${row.rsi}` : null,
+        row ? `MACD ${row.macdHistPct > 0 ? '+' : ''}${row.macdHistPct}%` : null,
+        row ? `Médias ${row.emaGapAtr > 0 ? 'EMA20 > 50' : 'EMA20 < 50'}` : null,
+        row ? `Vol ${row.volRatio}x` : null
+      ].filter(Boolean) as string[];
+
+      const indicatorMetrics = row ? {
+        rsi: row.rsi,
+        rsiZone: row.rsi >= 70 ? 'Sobrecompra' : row.rsi <= 30 ? 'Sobrevenda' : row.rsi >= 50 ? 'Zona Compradora' : 'Zona Vendedora',
+        macdHistogram: row.macdHistPct,
+        macdSignal: row.macdHistPct > 0 ? 'Expansão Bullish' : 'Pressão Bearish',
+        emaTrend: row.emaGapAtr > 0 ? 'EMA 20 > EMA 50 (Alta)' : 'EMA 20 < EMA 50 (Baixa)',
+        volumeRatio: row.volRatio,
+        atrPercent: row.atrPct,
+        trendStrengthAtr: Math.abs(row.emaGapAtr)
+      } : undefined;
+
       return {
         id: `${a.symbol}-ai-${market}-${now}-${idx}`,
         market, symbol: a.symbol,
@@ -362,15 +387,20 @@ Responda ESTRITAMENTE em JSON:
         strategyName: strategy === 'AI_ENGINE_BREAKOUT' ? 'Motor IA: Rompimento' : strategy === 'AI_ENGINE_REVERSAL' ? 'Motor IA: Reversão' : 'Motor IA: Momentum',
         timeframe: '4h', entryPrice: a.entry, targetPrice: a.target, stopLossPrice: a.stop, riskRewardRatio: `1:${rr}`,
         status: 'OPEN', technicalReason: thesis,
-        indicatorsTriggered: ['Motor IA', `Confiança ${a.confidence}%`, `R:R 1:${rr}`],
+        indicatorsTriggered: indList,
+        indicatorMetrics,
         timestamp: 'agora', createdAt: now, isDemo: false, isAiGenerated: true,
         disclaimer: 'Sinal decidido por IA a partir do mercado e dos indicadores, dentro de travas de risco. Em validação: só simulação.',
         aiEngine: { isAiGenerated: true, confidence: a.confidence, verdict: a.direction === 'SHORT' ? 'SHORT APROVADO' : 'LONG APROVADO', thesis, riskLevel: level, analyzedAt: now }
       };
     });
 
-    // 5. O histórico é mantido (antes cada rodada apagava o anterior), para medir o resultado ao vivo
-    state.signals = [...created, ...state.signals].slice(0, 200);
+    // 5. O histórico é mantido com descarte automático de sinais muito antigos (> 7 dias)
+    const MAX_SIGNAL_AGE_MS = 7 * 24 * 3600e3;
+    state.signals = [...created, ...state.signals]
+      .filter((s) => s.status === 'OPEN' || (now - (s.closedAt || s.createdAt || 0)) <= MAX_SIGNAL_AGE_MS)
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+      .slice(0, 200);
     state.lastScanAt = now;
     persist(market);
     for (const s of created) await sendTelegram(alertAi(s, 'entry'));
