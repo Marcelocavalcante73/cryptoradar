@@ -21,6 +21,7 @@ import { SettingsView } from './components/settings/SettingsView';
 import { BacktestView } from './components/backtest/BacktestView';
 import { TrendView, TrendInfo } from './components/trend/TrendView';
 import { B3Info, B3SignalsView, B3TrendView, B3TrackView } from './components/b3/B3Views';
+import { AiSwingView } from './components/b3/AiSwingView';
 import { TrendSignal } from './services/trendSignals';
 import { AccessGate } from './components/common/AccessGate';
 import { localStore } from './services/localStore';
@@ -357,12 +358,12 @@ export default function App() {
       goTo('b3signals');
     } else if (next === 'futures') {
       changeMarket('futures');
-      if (activeTab === 'trend' || activeTab === 'b3signals' || activeTab === 'b3trend' || activeTab === 'b3track') {
+      if (activeTab === 'trend' || activeTab === 'b3signals' || activeTab === 'b3trend' || activeTab === 'b3track' || activeTab === 'b3ai') {
         goTo('signals');
       }
     } else {
       changeMarket('spot');
-      if (activeTab === 'b3signals' || activeTab === 'b3trend' || activeTab === 'b3track') {
+      if (activeTab === 'b3signals' || activeTab === 'b3trend' || activeTab === 'b3track' || activeTab === 'b3ai') {
         goTo('signals');
       }
     }
@@ -557,6 +558,7 @@ export default function App() {
 
           {isB3 && activeTab === 'b3signals' && <B3SignalsView info={b3} capital={settings.b3Capital ?? 0} riskPercent={settings.realRiskPercent ?? 1} />}
           {isB3 && activeTab === 'b3trend' && <B3TrendView info={b3} capital={settings.b3Capital ?? 0} riskPercent={settings.realRiskPercent ?? 1} />}
+          {isB3 && activeTab === 'b3ai' && <AiSwingView info={b3} capital={settings.b3Capital ?? 0} riskPercent={settings.realRiskPercent ?? 1} />}
           {isB3 && activeTab === 'b3track' && <B3TrackView info={b3} onOpenBacktest={() => goTo('backtest')} />}
 
           {!isB3 && activeTab === 'signals' && (

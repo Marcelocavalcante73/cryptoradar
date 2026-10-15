@@ -36,6 +36,13 @@ export interface B3Signal {
   exitPrice?: number;
   closedAt?: number;
   alertedExit?: boolean;
+  // Sinais do motor de IA: múltiplos de ATR e prazo escolhidos pela IA (dentro dos limites do código)
+  engine?: 'rules' | 'ai';
+  stopMult?: number;
+  targetMult?: number;
+  holdDays?: number;
+  confidence?: number;
+  reason?: string;
 }
 
 export const isB3Done = (s: B3Signal) => s.status === 'TARGET' || s.status === 'STOP' || s.status === 'TIMEOUT';
@@ -107,8 +114,9 @@ export function updateIndicatorSignal(sig: B3Signal, candles: CandleData[], now:
 
   const entry = candles[entryIdx].open;
   out.entryPrice = entry;
-  out.stopPrice = entry - ATR_STOP_MULT * sig.atr;
-  out.targetPrice = entry + ATR_TARGET_MULT * sig.atr;
+  const sm = sig.stopMult ?? ATR_STOP_MULT, tm = sig.targetMult ?? ATR_TARGET_MULT, hold = sig.holdDays ?? B3_HOLD_DAYS;
+  out.stopPrice = entry - sm * sig.atr;
+  out.targetPrice = entry + tm * sig.atr;
   out.lastPrice = candles[candles.length - 1].close;
 
   for (let j = entryIdx; j < candles.length; j++) {
@@ -121,7 +129,7 @@ export function updateIndicatorSignal(sig: B3Signal, candles: CandleData[], now:
       out.closedAt = d.timestamp; return out;
     }
     const closedDay = d.timestamp + DAY_MS <= now;
-    if (closedDay && j - entryIdx >= B3_HOLD_DAYS) {
+    if (closedDay && j - entryIdx >= hold) {
       if (j + 1 < candles.length) { out.status = 'TIMEOUT'; out.exitPrice = candles[j + 1].open; out.closedAt = candles[j + 1].timestamp; }
       else out.status = 'EXIT_SIGNAL'; // prazo de 20 pregões: sai na abertura de amanhã
       return out;
@@ -134,7 +142,7 @@ export function indicatorSignalResult(sig: B3Signal): { netPct: number; r: numbe
   if (!isB3Done(sig) || sig.entryPrice === undefined || sig.exitPrice === undefined) return null;
   const cost = 2 * (DEFAULT_BACKTEST_OPTIONS.feeRate + DEFAULT_BACKTEST_OPTIONS.slippageRate) * 100;
   const net = ((sig.exitPrice - sig.entryPrice) / sig.entryPrice) * 100 - cost;
-  const riskPct = ((ATR_STOP_MULT * sig.atr) / sig.entryPrice) * 100;
+  const riskPct = (((sig.stopMult ?? ATR_STOP_MULT) * sig.atr) / sig.entryPrice) * 100;
   return { netPct: net, r: riskPct > 0 ? net / riskPct : 0 };
 }
 

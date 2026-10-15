@@ -50,6 +50,7 @@ process.env.STATE_BACKEND = 'memory'; // testes não gravam no disco nem no Supa
 process.env.UNIVERSE_CACHE = 'off';
 process.env.RETRY_BASE_MS = '1';
 process.env.B3_PERSIST = 'off';
+process.env.AI_PERSIST = 'off';
 const buildUniverse = (m?: 'spot' | 'futures') => { resetTop100Cache(); return buildUniverseRaw(m); };
 import { formatTelegramAlert } from '../../server/scanner';
 import { computeSignalPerformance, signalResultR, evaluateReadiness, PerfSignal } from '../services/signalPerformance';
@@ -62,6 +63,8 @@ import { detectTrendEntry, updateTrendSignal, canEnter, splitClosed, trendSignal
 import { runTrendBacktest, btcRegimeByDay, TREND_RULES } from '../services/trendBacktest';
 import { marketTrend, detectIndicatorEntry, updateIndicatorSignal, indicatorSignalResult, evaluateB3Readiness, b3Sizing, B3Signal } from '../services/b3Signals';
 import { aiConfig, aiExplain, aiSummary, generateText, resetAiState } from '../../server/aiAnalyst';
+import { computeRow, parseDecisions, pickEntries, aiSignalFrom, buildPrompt, AiDecision } from '../services/aiSwing';
+import { runAiSwing, getAiSwingState, resetAiSwing } from '../../server/aiSwing';
 import { readJson, OldServerError } from '../services/http';
 import { runB3Scan, getB3State, resetB3State, formatB3Alert } from '../../server/b3Scanner';
 import { parseYahooChart, parseCdiSeries, B3_TICKERS, yahooSymbol } from '../../server/b3Data';
@@ -2081,6 +2084,128 @@ console.log('\n--- Sincronização e execução ---');
   assert(shouldServeStatic({ NODE_ENV: 'production' } as any, ['--dev'], true) === false && shouldServeStatic({ NODE_ENV: 'development', K_SERVICE: 'x' } as any, [], true) === false, 'npm run dev (--dev) e NODE_ENV=development usam o modo de desenvolvimento');
   assert(shouldServeStatic({ K_SERVICE: 'x' } as any, [], true) === true && shouldServeStatic({ RENDER: 'true' } as any, [], true) === true, 'Em hospedagem conhecida, sem NODE_ENV, serve o compilado se existir dist/');
   assert(shouldServeStatic({} as any, [], true) === false && shouldServeStatic({ RENDER: 'true' } as any, [], false) === false, 'Máquina própria não serve um dist/ antigo por engano; sem dist/ não há o que servir');
+}
+
+
+// ============================================================================
+// MOTOR DE IA DA B3: A IA DECIDE, O CÓDIGO IMPÕE TRAVAS
+// ============================================================================
+console.log('\n--- Motor de IA da B3 ---');
+{
+  const DAYMS = 86400000;
+  const T0 = 1_500_000_000_000;
+  const mkC = (n: number, f: (i: number) => number): CandleData[] => {
+    let p = 100;
+    return Array.from({ length: n }, (_, i) => {
+      const o = p; p = o * (1 + f(i));
+      return { time: String(i), timestamp: Math.floor(T0 / DAYMS) * DAYMS + i * DAYMS, open: o, high: Math.max(o, p) * 1.01, low: Math.min(o, p) * 0.99, close: p, volume: 1000 + (i % 5) * 100 };
+    });
+  };
+
+  // Indicadores que a IA recebe
+  const row = computeRow('TEST3', mkC(300, (i) => 0.002 + Math.sin(i / 9) * 0.01))!;
+  assert(!!row && row.rsi > 0 && row.rsi < 100 && row.atrPct > 0 && row.volRatio > 0 && Math.abs(row.ruleScore) <= 100 && typeof row.dist55HighPct === 'number', 'IA B3: indicadores calculados para a IA (RSI, ATR%, volume, distância da máxima, pontuação)', JSON.stringify(row));
+  assert(computeRow('X', mkC(100, () => 0.001)) === null, 'IA B3: pouco histórico => ativo fora da tabela');
+  const mt = marketTrend(mkC(260, () => 0.002))!;
+  const pr = buildPrompt(mt, [row]);
+  assert(/JSON/.test(pr.system) && /ESPERAR/.test(pr.system) && pr.user.includes('TEST3') && pr.user.includes('"leitura_do_mercado":"Alta"'), 'IA B3: o pedido leva o mercado, os indicadores e o formato JSON, com padrão de esperar');
+
+  // Leitura da resposta
+  const allowed = new Set(['AAA3', 'BBB3', 'CCC3']);
+  const good = '```json\n{"decisions":[{"symbol":"aaa3","action":"buy","confidence":82.4,"stop_atr":2,"target_atr":4,"hold_days":12,"reason":"tendência"},{"symbol":"ZZZ9","action":"BUY","confidence":90,"stop_atr":2,"target_atr":4},{"symbol":"AAA3","action":"BUY","confidence":99},{"symbol":"BBB3","action":"WAIT","confidence":"x"}]}\n```';
+  const dec = parseDecisions(good, allowed);
+  assert(dec.length === 2 && dec[0].symbol === 'AAA3' && dec[0].action === 'BUY' && dec[0].confidence === 82 && dec[1].action === 'WAIT' && dec[1].confidence === 0, 'IA B3: lê JSON com cerca de código; descarta ativo fora da lista e repetido', JSON.stringify(dec));
+  assert(parseDecisions('não sei', allowed).length === 0 && parseDecisions('{"decisions":"x"}', allowed).length === 0 && parseDecisions('[{"symbol":"AAA3","action":"BUY","confidence":70,"stop_atr":2,"target_atr":4}]', allowed).length === 1, 'IA B3: texto fora do formato é descartado; lista solta também vale');
+
+  // Travas do código
+  const D = (symbol: string, o: Partial<AiDecision> = {}): AiDecision => ({ symbol, action: 'BUY', confidence: 80, stopAtr: 2, targetAtr: 4, holdDays: 10, reason: 'r', ...o });
+  const none = new Set<string>();
+  const okPick = pickEntries([D('A'), D('B', { confidence: 90 }), D('C', { confidence: 59 }), D('D', { targetAtr: 2.5 }), D('E', { stopAtr: NaN })], { bullish: true, openSymbols: none });
+  assert(okPick.approved.map((d) => d.symbol).join() === 'B,A', 'IA B3: aprova só compras válidas, da maior confiança para a menor', okPick.approved.map((d) => d.symbol).join());
+  assert(okPick.blocked.some((b) => b.symbol === 'C' && /confiança/.test(b.why)) && okPick.blocked.some((b) => b.symbol === 'D' && /1,5x/.test(b.why)) && okPick.blocked.some((b) => b.symbol === 'E'), 'IA B3: barra confiança baixa, risco/retorno ruim e stop inválido, com o motivo');
+  assert(pickEntries([D('A')], { bullish: false, openSymbols: none }).approved.length === 0, 'IA B3: mercado em baixa bloqueia qualquer compra, mesmo que a IA queira');
+  assert(pickEntries([D('A')], { bullish: true, openSymbols: new Set(['A']) }).approved.length === 0, 'IA B3: não abre segundo sinal no mesmo ativo');
+  assert(pickEntries(['A', 'B', 'C', 'D', 'E'].map((x) => D(x)), { bullish: true, openSymbols: none }).approved.length === 3, 'IA B3: no máximo 3 sinais por rodada');
+  const cl = pickEntries([D('A', { stopAtr: 0.2, targetAtr: 30, holdDays: 90 }), D('B', { stopAtr: 9, targetAtr: 30, holdDays: 1 })], { bullish: true, openSymbols: none }).approved;
+  assert(cl[0].stopAtr === 1 && cl[0].targetAtr === 6 && cl[0].holdDays === 20 && cl[1].stopAtr === 3 && cl[1].holdDays === 3, 'IA B3: stop, alvo e prazo ficam dentro dos limites do código', JSON.stringify(cl));
+
+  // Sinal da IA: usa os múltiplos e o prazo dela
+  const candles = mkC(300, (i) => 0.002 + Math.sin(i / 9) * 0.01);
+  const sig = aiSignalFrom({ ...D('TEST3'), stopAtr: 1.5, targetAtr: 3, holdDays: 5 }, candles, 1)!;
+  assert(sig.engine === 'ai' && sig.stopMult === 1.5 && sig.holdDays === 5 && sig.refPrice === candles[299].close && sig.stopPrice < sig.refPrice && sig.targetPrice > sig.refPrice, 'IA B3: sinal criado com stop, alvo e prazo escolhidos pela IA');
+  const flat = [...candles.slice(0, 300)];
+  const after = Array.from({ length: 12 }, (_, k) => ({ ...candles[299], timestamp: candles[299].timestamp + (k + 1) * DAYMS, open: candles[299].close, high: candles[299].close * 1.0005, low: candles[299].close * 0.9995, close: candles[299].close }));
+  const upd = updateIndicatorSignal(sig, [...flat, ...after], candles[299].timestamp + 30 * DAYMS);
+  assert(upd.status === 'TIMEOUT' && upd.holdDays === 5, 'IA B3: o prazo da IA (5 pregões) vale no acompanhamento', upd.status);
+  const withMult = updateIndicatorSignal(sig, [...flat, after[0]], candles[299].timestamp + 30 * DAYMS);
+  assert(Math.abs(withMult.entryPrice! - withMult.stopPrice - 1.5 * sig.atr) < 1e-9 && Math.abs(withMult.targetPrice - withMult.entryPrice! - 3 * sig.atr) < 1e-9, 'IA B3: stop e alvo usam os múltiplos da IA, não os fixos do motor de regras');
+
+  // Rodada completa no servidor: Yahoo e Gemini simulados
+  const saved = { g: process.env.GEMINI_API_KEY, o: process.env.OPENAI_API_KEY, p: process.env.AI_PROVIDER };
+  process.env.GEMINI_API_KEY = 'g'.repeat(30); delete process.env.OPENAI_API_KEY; delete process.env.AI_PROVIDER;
+  resetAiState();
+  const lastDay = Math.floor(Date.now() / DAYMS) * DAYMS - DAYMS;
+  const chartFor = (closes: number[]) => {
+    const ts: number[] = [], o: number[] = [], h: number[] = [], l: number[] = [], c: number[] = [], v: number[] = [];
+    closes.forEach((cl2, i) => { const prev = i ? closes[i - 1] : cl2; ts.push((lastDay - (closes.length - 1 - i) * DAYMS) / 1000); o.push(prev); c.push(cl2); h.push(Math.max(prev, cl2) * 1.01); l.push(Math.min(prev, cl2) * 0.99); v.push(1000 + (i % 7) * 50); });
+    return { chart: { result: [{ timestamp: ts, indicators: { quote: [{ open: o, high: h, low: l, close: c, volume: v }] } }] } };
+  };
+  const ibovUpC = Array.from({ length: 400 }, (_, i) => 100 * Math.pow(1.001, i));
+  const ibovDownC = Array.from({ length: 400 }, (_, i) => 100 * Math.pow(0.999, i));
+  const stockC = Array.from({ length: 400 }, (_, i) => 100 + Math.sin(i / 3) * 3 + i * 0.05);
+  let ibovNow = ibovUpC, aiCalls = 0, aiBody = '';
+  let aiReply = JSON.stringify({ decisions: [
+    { symbol: 'PETR4', action: 'BUY', confidence: 80, stop_atr: 2, target_atr: 4, hold_days: 10, reason: 'Tendência de alta com volume.' },
+    { symbol: 'VALE3', action: 'BUY', confidence: 50, stop_atr: 2, target_atr: 4, hold_days: 10, reason: 'fraco' },
+    { symbol: 'ITUB4', action: 'BUY', confidence: 90, stop_atr: 2, target_atr: 2, hold_days: 10, reason: 'alvo curto' },
+    { symbol: 'WEGE3', action: 'WAIT', confidence: 30, reason: 'sem gatilho' }
+  ] });
+  const realFetchW = globalThis.fetch;
+  globalThis.fetch = ((url: any, init: any) => {
+    const u = decodeURIComponent(String(url));
+    if (u.includes('query1.finance.yahoo.com')) {
+      const sym = u.split('/chart/')[1].split('?')[0];
+      return Promise.resolve(new Response(JSON.stringify(chartFor(sym === '^BVSP' ? ibovNow : stockC)), { status: 200 }));
+    }
+    if (u.includes('generativelanguage.googleapis.com')) {
+      aiCalls++; aiBody = String(init?.body ?? '');
+      return Promise.resolve(new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: aiReply }] } }] }), { status: 200 }));
+    }
+    return Promise.reject(new Error('url inesperada: ' + u));
+  }) as typeof fetch;
+
+  resetAiSwing();
+  const r1 = await runAiSwing(true);
+  const sw = getAiSwingState();
+  assert(r1.ok && aiCalls === 1 && sw.signals.length === 1 && sw.signals[0].symbol === 'PETR4' && sw.signals[0].engine === 'ai' && sw.signals[0].confidence === 80, 'Servidor IA B3: IA decide e só a compra válida vira sinal', JSON.stringify({ r1, n: sw.signals.length }));
+  assert(sw.log!.items.length >= 4 && sw.log!.created.join() === 'PETR4' && sw.log!.blocked.some((b) => b.symbol === 'VALE3') && sw.log!.blocked.some((b) => b.symbol === 'ITUB4'), 'Servidor IA B3: registra tudo o que a IA decidiu e o que as travas barraram');
+  const sent = JSON.parse(aiBody);
+  assert(sent.generationConfig.responseMimeType === 'application/json' && sent.contents[0].parts[0].text.includes('"symbol":"PETR4"') && sent.contents[0].parts[0].text.includes('"rsi"'), 'Servidor IA B3: a IA recebe a tabela de indicadores e responde em JSON');
+  assert(sw.lastDecisionDay !== null && sw.market?.bullish === true, 'Servidor IA B3: guarda o pregão decidido e a leitura do mercado');
+
+  const r2 = await runAiSwing(false);
+  assert(r2.ok && aiCalls === 1, 'Servidor IA B3: no mesmo pregão não chama a IA de novo (só atualiza os sinais)', String(aiCalls));
+  const r3 = await runAiSwing(true);
+  assert(r3.ok && aiCalls === 2 && getAiSwingState().signals.length === 1, 'Servidor IA B3: pedido manual decide de novo, sem duplicar o sinal aberto');
+
+  // Mercado em baixa: a IA pode querer comprar, o código bloqueia
+  resetAiSwing(); ibovNow = ibovDownC;
+  await runAiSwing(true);
+  assert(getAiSwingState().signals.length === 0 && getAiSwingState().log!.blocked.some((b) => /abaixo da média/.test(b.why)), 'Servidor IA B3: Ibovespa em baixa => a compra da IA é barrada e fica registrado o porquê');
+
+  // Resposta fora do formato e IA fora do ar
+  resetAiSwing(); ibovNow = ibovUpC; aiReply = 'desculpe, não posso ajudar';
+  const bad = await runAiSwing(true);
+  assert(!bad.ok && /formato/.test(bad.message) && getAiSwingState().signals.length === 0, 'Servidor IA B3: resposta fora do formato não gera sinal e mostra erro claro', bad.message);
+  delete process.env.GEMINI_API_KEY;
+  resetAiSwing();
+  const callsBefore = aiCalls;
+  const off = await runAiSwing(true);
+  assert(off.ok && aiCalls === callsBefore && getAiSwingState().enabled === false, 'Servidor IA B3: sem chave, não chama a IA e não dá erro', off.message);
+
+  globalThis.fetch = realFetchW;
+  for (const [k, v] of [['GEMINI_API_KEY', saved.g], ['OPENAI_API_KEY', saved.o], ['AI_PROVIDER', saved.p]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  resetAiSwing(); resetAiState();
 }
 
 console.log('\n========================================================');
