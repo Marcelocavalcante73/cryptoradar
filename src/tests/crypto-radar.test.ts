@@ -62,7 +62,7 @@ import { summarizeBatch, riskCurve, withoutBest } from '../services/backtestBatc
 import { detectTrendEntry, updateTrendSignal, canEnter, splitClosed, trendSignalResult, evaluateTrendReadiness, TrendSignal } from '../services/trendSignals';
 import { runTrendBacktest, btcRegimeByDay, TREND_RULES } from '../services/trendBacktest';
 import { marketTrend, detectIndicatorEntry, updateIndicatorSignal, indicatorSignalResult, evaluateB3Readiness, b3Sizing, B3Signal } from '../services/b3Signals';
-import { aiConfig, aiExplain, aiSummary, generateText, resetAiState } from '../../server/aiAnalyst';
+import { aiConfig, generateText, resetAiState, takeBudget } from '../../server/aiAnalyst';
 import { guardSignals, resolveOutcome, liveStats } from '../services/aiGuards';
 import { runAiEngineScan, getAiEngineState, resetAiEngineStates, refreshAiOutcomes } from '../../server/aiEngine';
 import { scanners } from '../../server/scanner';
@@ -1553,9 +1553,9 @@ console.log('\n--- B3 swing trade ---');
 }
 
 // ============================================================================
-// ANÁLISE COM IA (GEMINI / CHATGPT): SÓ EXPLICA O QUE O SCANNER CALCULOU
+// PROVEDOR DE IA (GEMINI / CHATGPT)
 // ============================================================================
-console.log('\n--- Análise com IA ---');
+console.log('\n--- Provedor de IA ---');
 {
   const saved = { g: process.env.GEMINI_API_KEY, o: process.env.OPENAI_API_KEY, p: process.env.AI_PROVIDER, m: process.env.AI_MODEL, l: process.env.AI_DAILY_LIMIT };
   const setEnv = (g?: string, o?: string, p?: string) => {
@@ -1577,77 +1577,44 @@ console.log('\n--- Análise com IA ---');
   setEnv(GKEY, undefined, 'openai');
   assert(!aiConfig().enabled, 'IA: provedor pedido sem a chave dele => desligada');
 
-  // Estado dos scanners com um sinal conhecido
-  resetB3State();
-  const b3s = getB3State();
-  b3s.market = { bullish: true, close: 130000, sma50: 128000, sma200: 120000, change20dPct: 2, label: 'Alta' };
-  b3s.indicators.signals = [{ id: 'WEGE3-ind-1', symbol: 'WEGE3', signalDay: 1, createdAt: 1, refPrice: 45, stopPrice: 43.5, targetPrice: 48, atr: 1, score: 75, status: 'OPEN' }];
-
   const calls: { url: string; init: any }[] = [];
   const realFetchAi = globalThis.fetch;
   let reply: (url: string) => Response = (url) => url.includes('googleapis')
-    ? new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'Explicação do Gemini.' }] } }] }), { status: 200 })
-    : new Response(JSON.stringify({ choices: [{ message: { content: 'Explicação do ChatGPT.' } }] }), { status: 200 });
+    ? new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'resposta do Gemini' }] } }] }), { status: 200 })
+    : new Response(JSON.stringify({ choices: [{ message: { content: 'resposta do ChatGPT' } }] }), { status: 200 });
   globalThis.fetch = ((url: any, init: any) => { calls.push({ url: String(url), init }); return Promise.resolve(reply(String(url))); }) as typeof fetch;
 
   setEnv(GKEY);
   resetAiState();
-  const g1 = await aiExplain('b3-signal', 'WEGE3-ind-1');
-  assert(g1.status === 200 && g1.json.text === 'Explicação do Gemini.' && g1.json.provider === 'gemini' && g1.json.cached === false, 'IA: explica um sinal da B3 com o Gemini', JSON.stringify(g1));
+  const t1 = await generateText('sistema', 'usuário', { json: true, temperature: 0.2, maxTokens: 900 });
   const gb = JSON.parse(calls[0].init.body);
-  assert(calls[0].init.headers['x-goog-api-key'] === GKEY && !calls[0].url.includes(GKEY), 'IA: chave do Gemini vai no cabeçalho, não na URL');
-  const userText: string = gb.contents[0].parts[0].text;
-  assert(userText.includes('WEGE3') && userText.includes('"stop":43.5') && userText.includes('"alvo":48'), 'IA: o texto enviado traz os dados do sinal, montados no servidor');
-  assert(/não preveja preços/i.test(gb.systemInstruction.parts[0].text) && /não recomende/i.test(gb.systemInstruction.parts[0].text), 'IA: instrução proíbe previsão de preço e recomendação');
-  const g2 = await aiExplain('b3-signal', 'WEGE3-ind-1');
-  assert(g2.json.cached === true && calls.length === 1, 'IA: segunda explicação igual vem do cache, sem nova chamada');
-  b3s.indicators.signals[0] = { ...b3s.indicators.signals[0], status: 'STOP', exitPrice: 43.5 } as any;
-  await aiExplain('b3-signal', 'WEGE3-ind-1');
-  assert(calls.length === 2, 'IA: sinal que mudou de estado gera nova explicação');
+  assert(t1 === 'resposta do Gemini' && calls[0].init.headers['x-goog-api-key'] === GKEY && !calls[0].url.includes(GKEY), 'IA: Gemini responde e a chave vai no cabeçalho, não na URL');
+  assert(gb.generationConfig.responseMimeType === 'application/json' && gb.generationConfig.temperature === 0.2 && gb.generationConfig.maxOutputTokens === 900 && gb.systemInstruction.parts[0].text === 'sistema', 'IA: Gemini recebe JSON, temperatura, limite e instrução de sistema');
 
-  assert((await aiExplain('b3-signal', 'NAO-EXISTE')).status === 404, 'IA: sinal inexistente => 404');
-  assert((await aiExplain('hack', 'x')).status === 400 && (await aiExplain('b3-signal', 'x'.repeat(200))).status === 400 && (await aiExplain('b3-signal', 5)).status === 400, 'IA: pedido inválido => 400');
-  assert((await aiSummary('qualquer')).status === 400, 'IA: seção inválida => 400');
-
-  const sm = await aiSummary('b3');
-  assert(sm.status === 200 && sm.json.text === 'Explicação do Gemini.', 'IA: resumo do dia da B3');
-  assert(JSON.parse(calls[calls.length - 1].init.body).contents[0].parts[0].text.includes('"leitura":"Alta"'), 'IA: resumo traz a leitura do mercado');
-  const sc = await aiSummary('crypto');
-  assert(sc.status === 200, 'IA: resumo do dia das criptos');
-
-  // ChatGPT
   setEnv(undefined, OKEY);
-  resetAiState();
   calls.length = 0;
-  const o1 = await aiExplain('b3-signal', 'WEGE3-ind-1');
-  assert(o1.status === 200 && o1.json.text === 'Explicação do ChatGPT.' && o1.json.provider === 'openai', 'IA: explica com o ChatGPT');
-  assert(calls[0].url === 'https://api.openai.com/v1/chat/completions' && calls[0].init.headers.Authorization === `Bearer ${OKEY}`, 'IA: chave da OpenAI vai no cabeçalho Authorization');
-  assert(JSON.parse(calls[0].init.body).messages[0].role === 'system', 'IA: ChatGPT recebe a instrução como mensagem de sistema');
+  const t2 = await generateText('sistema', 'usuário', { json: true });
+  const ob = JSON.parse(calls[0].init.body);
+  assert(t2 === 'resposta do ChatGPT' && calls[0].url === 'https://api.openai.com/v1/chat/completions' && calls[0].init.headers.Authorization === `Bearer ${OKEY}`, 'IA: ChatGPT responde e a chave vai no cabeçalho Authorization');
+  assert(ob.response_format.type === 'json_object' && ob.messages[0].role === 'system', 'IA: ChatGPT recebe JSON e a instrução como mensagem de sistema');
 
-  // Falhas e limites
-  resetAiState();
   reply = () => new Response('', { status: 401 });
-  const bad = await aiExplain('b3-signal', 'WEGE3-ind-1');
-  assert(bad.status === 502 && String(bad.json.error).includes('401'), 'IA: erro do provedor vira mensagem clara (502)', JSON.stringify(bad));
+  let e1 = ''; try { await generateText('a', 'b'); } catch (e: any) { e1 = e.message; }
+  assert(e1.includes('401'), 'IA: erro do provedor vira mensagem clara', e1);
   reply = () => new Response(JSON.stringify({ choices: [] }), { status: 200 });
-  assert((await aiExplain('b3-signal', 'WEGE3-ind-1')).status === 502, 'IA: resposta vazia => 502');
-  let threw = false; try { setEnv(); await generateText('a', 'b'); } catch { threw = true; }
-  assert(threw, 'IA: sem chave, generateText recusa');
+  let e2 = ''; try { await generateText('a', 'b'); } catch (e: any) { e2 = e.message; }
+  assert(/vazio/.test(e2), 'IA: resposta vazia => erro', e2);
   setEnv();
-  assert((await aiExplain('b3-signal', 'WEGE3-ind-1')).status === 503, 'IA: desligada => 503 com instrução de como ligar');
+  let e3 = ''; try { await generateText('a', 'b'); } catch (e: any) { e3 = e.message; }
+  assert(/desligada/.test(e3), 'IA: sem chave, generateText recusa');
 
-  setEnv(GKEY);
   process.env.AI_DAILY_LIMIT = '2';
   resetAiState();
-  reply = (url) => new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] }), { status: 200 });
-  const ids = ['a', 'b', 'c'].map((x) => ({ ...b3s.indicators.signals[0], id: `L-${x}` }));
-  b3s.indicators.signals.push(...(ids as any));
-  const r1 = await aiExplain('b3-signal', 'L-a'), r2 = await aiExplain('b3-signal', 'L-b'), r3 = await aiExplain('b3-signal', 'L-c');
-  assert(r1.status === 200 && r2.status === 200 && r3.status === 429, 'IA: limite diário de chamadas protege o custo (429)');
+  assert(takeBudget() && takeBudget() && !takeBudget(), 'IA: limite diário de chamadas protege o custo');
 
   globalThis.fetch = realFetchAi;
   for (const [k, v] of [['GEMINI_API_KEY', saved.g], ['OPENAI_API_KEY', saved.o], ['AI_PROVIDER', saved.p], ['AI_MODEL', saved.m], ['AI_DAILY_LIMIT', saved.l]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
-  resetB3State();
+  resetAiState();
 }
 
 console.log('\n--- Resposta HTML no lugar de JSON ---');
