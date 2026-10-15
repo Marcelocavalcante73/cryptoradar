@@ -12,7 +12,7 @@ import { getLabJob, startLabJob } from './server/b3LabJob';
 import { aiConfig } from './server/aiAnalyst';
 import { getAiEngineState, runAiEngineScan, evaluateSignalWithAiEngine, loadAiEngineState, startAiEngineTracker } from './server/aiEngine';
 import { getAiSwingState, runAiSwing, loadAiSwing, startAiSwing } from './server/aiSwing';
-import { getRobot, runRobot, loadRobot, startRobot, updateRobotConfig, resetRobot } from './server/robot';
+import { getRobot, runRobot, ensureRobot, loadRobot, startRobot, updateRobotConfig, resetRobot } from './server/robot';
 import { getB3State, runB3Scan, startB3Scanner, ensureB3Scan, loadB3State } from './server/b3Scanner';
 import { getTrendState, runTrendScan, startTrendScanner, ensureTrendScan, loadTrendState } from './server/trendScanner';
 import { futuresKlines, futuresPrices, getFuturesProvider } from './server/futuresData';
@@ -404,7 +404,11 @@ const aiGuard = (req: Request, res: Response): boolean => {
  *  POST /api/robot/run        roda um ciclo agora
  *  POST /api/robot/reset      {startCapital} zera a carteira do robô (fica desligado)
  */
-app.get('/api/robot', (_req: Request, res: Response) => { res.json(getRobot()); });
+app.get('/api/robot', async (req: Request, res: Response) => {
+  // Se o servidor esteve dormindo, recupera o que perdeu antes de responder (ele confere stops e alvos pelas velas de 1h)
+  await ensureRobot(6 * 60e3, req.query.wait === '1' ? 20000 : 0);
+  res.json(getRobot());
+});
 app.post('/api/robot/config', (req: Request, res: Response) => {
   if (!aiGuard(req, res)) return;
   updateRobotConfig(req.body);

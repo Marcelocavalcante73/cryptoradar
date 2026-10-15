@@ -129,9 +129,13 @@ const fmt = (n: number) => n.toLocaleString('en-US', { maximumFractionDigits: n 
 
 /**
  * Um ciclo do robô: atualiza preços, executa saídas, confere os limites de risco e, se permitido, abre novas posições.
+ * `bars` (velas de 1h dos ativos em carteira) cobre o tempo em que o servidor ficou parado: se o stop ou o alvo foram tocados
+ * nesse intervalo, a saída é aplicada pelo preço do stop/alvo, na hora da vela, e não pelo preço de agora.
  * Devolve um novo estado (o recebido não é alterado) e os eventos criados neste ciclo.
  */
-export function robotStep(prev: RobotState, signals: SourceSignal[], prices: Map<string, number>, now: number = Date.now()): { state: RobotState; events: RobotEvent[] } {
+export interface HourBar { timestamp: number; high: number; low: number; close: number }
+
+export function robotStep(prev: RobotState, signals: SourceSignal[], prices: Map<string, number>, now: number = Date.now(), bars: Map<string, HourBar[]> = new Map()): { state: RobotState; events: RobotEvent[] } {
   const s: RobotState = JSON.parse(JSON.stringify(prev));
   const cfg = s.config;
   const events: RobotEvent[] = [];
@@ -149,8 +153,14 @@ export function robotStep(prev: RobotState, signals: SourceSignal[], prices: Map
   const keep: RobotPosition[] = [];
   for (const p of s.positions) {
     const sig = bySignal.get(p.signalId);
-    let exit: { price: number; reason: string } | null = null;
-    if (sig?.state === 'DONE' && sig.exitPrice) exit = { price: sig.exitPrice, reason: 'a estratégia encerrou o sinal' };
+    let exit: { price: number; reason: string; at?: number } | null = null;
+    for (const b of bars.get(p.symbol) ?? []) {
+      if (b.timestamp < p.openedAt) continue; // a vela em que a posição abriu mistura preços de antes dela
+      if (b.low <= p.stopPrice) { exit = { price: p.stopPrice, reason: 'stop atingido', at: b.timestamp + 3600e3 }; break; }
+      if (p.targetPrice && b.high >= p.targetPrice) { exit = { price: p.targetPrice, reason: 'alvo atingido', at: b.timestamp + 3600e3 }; break; }
+    }
+    if (exit) { /* saída pelas velas */ }
+    else if (sig?.state === 'DONE' && sig.exitPrice) exit = { price: sig.exitPrice, reason: 'a estratégia encerrou o sinal' };
     else if (sig?.state === 'EXIT_NOW') exit = { price: p.lastPrice, reason: 'a estratégia mandou sair' };
     else if (p.lastPrice <= p.stopPrice) exit = { price: Math.min(p.stopPrice, p.lastPrice), reason: 'stop atingido' };
     else if (p.targetPrice && p.lastPrice >= p.targetPrice) exit = { price: p.targetPrice, reason: 'alvo atingido' };
@@ -160,7 +170,7 @@ export function robotStep(prev: RobotState, signals: SourceSignal[], prices: Map
     s.cash += p.qty * exitEff;
     s.trades.unshift({
       id: p.id, source: p.source, symbol: p.symbol, baseAsset: p.baseAsset, qty: p.qty, entryPrice: p.entryPrice,
-      exitPrice: exitEff, openedAt: p.openedAt, closedAt: now, reason: exit.reason, pnl, netPct: (exitEff / p.entryPrice - 1) * 100
+      exitPrice: exitEff, openedAt: p.openedAt, closedAt: Math.min(now, exit.at ?? now), reason: exit.reason, pnl, netPct: (exitEff / p.entryPrice - 1) * 100
     });
     log('exit', `Saiu de ${p.baseAsset} a ${fmt(exit.price)}: ${exit.reason} (${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} USDT).`);
   }
