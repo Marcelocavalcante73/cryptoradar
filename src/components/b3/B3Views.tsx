@@ -3,11 +3,9 @@ import {
   B3Signal, MarketTrend, isB3Done, indicatorSignalResult, evaluateB3Readiness, b3Sizing
 } from '../../services/b3Signals';
 import {
-  TrendSignal, trendSignalResult, evaluateTrendReadiness, TREND_READINESS
+  TrendSignal, trendSignalResult, evaluateTrendReadiness
 } from '../../services/trendSignals';
-import { ATR_STOP_MULT, ATR_TARGET_MULT } from '../../services/signalEngine';
 import { TREND_RULES } from '../../services/trendBacktest';
-import { AiExplain, AiSummary } from '../common/AiBox';
 import { fmtBrl, fmtPct, timeAgo, pnlColor } from '../common/format';
 
 export interface B3Info {
@@ -34,8 +32,7 @@ const Waiting: React.FC<{ info: B3Info | null; title: string }> = ({ info, title
 
 const Disclaimer: React.FC = () => (
   <p className="text-xs text-slate-500 leading-relaxed">
-    Em validação: acompanhe só como simulação, sem dinheiro real, até haver resultado ao vivo. Imposto (15% sobre o lucro em swing trade)
-    e corretagem não estão incluídos. Dados do Yahoo Finance, com possível atraso. Não é recomendação de investimento.
+    Em validação: só simulação. Sem imposto e corretagem. Dados do Yahoo Finance. Não é recomendação de investimento.
   </p>
 );
 
@@ -57,7 +54,6 @@ export const MarketCard: React.FC<{ info: B3Info }> = ({ info }) => {
         Ibovespa {fmtN(m.close)} pts, {m.bullish ? 'acima' : 'abaixo'} da média de 200 dias ({fmtN(m.sma200)}).
         {m.bullish ? ' Compras liberadas.' : ' Nenhuma compra nova até ele voltar acima.'}
       </p>
-      <p className="text-xs text-slate-500 mt-2">Média de 50 dias: {fmtN(m.sma50)}. O pregão fecha às 17h; os sinais aparecem depois das 21h (Brasília).</p>
     </section>
   );
 };
@@ -94,13 +90,12 @@ export const B3SignalsView: React.FC<{ info: B3Info | null; capital: number; ris
       <Header title="Sinais" info={info} />
       {info.lastError && <p className="text-sm text-amber-300">Erro na última varredura: {info.lastError}</p>}
       <MarketCard info={info} />
-      <AiSummary section="b3" />
 
       <section>
         <h3 className="text-sm font-medium text-slate-300 mb-2">Compras sugeridas ({active.length})</h3>
         {active.length === 0 ? (
           <p className={`${card} text-sm text-slate-400`}>
-            Nenhum sinal agora. O motor é exigente (pontuação mínima de 60 de 100) e só compra com o Ibovespa em alta, então é normal passar dias sem sinal.
+            Nenhum sinal agora. É normal passar dias sem sinal.
           </p>
         ) : (
           <div className="space-y-3">
@@ -124,7 +119,6 @@ export const B3SignalsView: React.FC<{ info: B3Info | null; capital: number; ris
                   {!s.entryPrice && <p className="text-xs text-slate-500 mt-2">A entrada é a abertura do próximo pregão; stop e alvo são ajustados quando ela for conhecida.</p>}
                   <SizeLine capital={capital} risk={riskPercent} entry={entry} stop={s.stopPrice} />
                   <div className="text-xs text-slate-500 mt-2">sinal {timeAgo(s.createdAt)} · prazo máximo 20 pregões</div>
-                  <AiExplain kind="b3-signal" id={s.id} />
                 </div>
               );
             })}
@@ -135,7 +129,7 @@ export const B3SignalsView: React.FC<{ info: B3Info | null; capital: number; ris
       <section>
         <h3 className="text-sm font-medium text-slate-300 mb-2">Mais fortes agora</h3>
         <div className={`${card} !p-0 divide-y divide-[#23272f]`}>
-          {info.indicators.scores.slice(0, 8).map((r) => (
+          {info.indicators.scores.slice(0, 5).map((r) => (
             <div key={r.symbol} className="flex items-center justify-between px-4 py-3">
               <span className="text-slate-100">{r.symbol}</span>
               <span className="text-sm tabular-nums text-slate-400">
@@ -144,9 +138,6 @@ export const B3SignalsView: React.FC<{ info: B3Info | null; capital: number; ris
             </div>
           ))}
         </div>
-        <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-          Pontuação de compra (médias, MACD e RSI). Com 60 ou mais, e o Ibovespa em alta, vira sinal. Os outros filtros (volume, mercado lateral) podem barrar.
-        </p>
       </section>
 
       {closedToday.length > 0 && (
@@ -200,7 +191,7 @@ export const B3TrendView: React.FC<{ info: B3Info | null; capital: number; riskP
         <h3 className="text-sm font-medium text-slate-300 mb-2">Posições da estratégia ({active.length})</h3>
         {active.length === 0 ? (
           <p className={`${card} text-sm text-slate-400`}>
-            Nenhuma posição aberta. A estratégia só entra em rompimentos de 55 dias, com o Ibovespa em alta: é normal ficar semanas sem sinal.
+            Nenhuma posição aberta. É normal ficar semanas sem sinal.
           </p>
         ) : (
           <div className="space-y-3">
@@ -228,7 +219,6 @@ export const B3TrendView: React.FC<{ info: B3Info | null; capital: number; riskP
                   {!s.entryPrice && <p className="text-xs text-slate-500 mt-2">A entrada é a abertura do próximo pregão; o stop é ajustado quando ela for conhecida.</p>}
                   <SizeLine capital={capital} risk={riskPercent} entry={entry} stop={s.stopPrice} />
                   <div className="text-xs text-slate-500 mt-2">sinal {timeAgo(s.createdAt)} · sem alvo fixo</div>
-                  <AiExplain kind="b3-trend" id={s.id} />
                 </div>
               );
             })}
@@ -239,7 +229,7 @@ export const B3TrendView: React.FC<{ info: B3Info | null; capital: number; riskP
       <section>
         <h3 className="text-sm font-medium text-slate-300 mb-2">Perto de romper</h3>
         <div className={`${card} !p-0 divide-y divide-[#23272f]`}>
-          {info.trend.watch.slice(0, 8).map((w) => (
+          {info.trend.watch.slice(0, 5).map((w) => (
             <div key={w.symbol} className="flex items-center justify-between px-4 py-3">
               <span className="text-slate-100">{w.symbol}</span>
               <span className="text-sm tabular-nums">
@@ -250,14 +240,8 @@ export const B3TrendView: React.FC<{ info: B3Info | null; capital: number; riskP
             </div>
           ))}
         </div>
-        <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-          Quanto cada ação precisa subir para fechar acima da máxima dos últimos 55 pregões. O rompimento só vale com o Ibovespa acima da média de 200 dias.
-        </p>
       </section>
 
-      <p className="text-xs text-slate-500 leading-relaxed">
-        Compra rompimentos de 55 dias, stop de {TREND_RULES.stopAtrMult} ATR, sai quando fecha abaixo da mínima de 20 dias. Perde na maioria das operações e ganha nas grandes altas.
-      </p>
       <Disclaimer />
     </div>
   );
@@ -295,10 +279,6 @@ export const B3TrackView: React.FC<{ info: B3Info | null; onOpenBacktest: () => 
   return (
     <div className="space-y-5 pb-24">
       <Header title="Resultados" info={info} />
-      <p className="text-sm text-slate-400 leading-relaxed">
-        Cada sinal vira uma operação simulada, com entrada na abertura do pregão seguinte e custos. É assim que a estratégia é validada ao vivo,
-        sem dinheiro real: mínimo de {TREND_READINESS.minClosed} operações encerradas em 12 semanas.
-      </p>
       <Ready title="Indicadores" r={ind} />
       <Ready title="Tendência (55 dias)" r={tr} />
 
@@ -335,9 +315,6 @@ export const B3TrackView: React.FC<{ info: B3Info | null; onOpenBacktest: () => 
       <button onClick={onOpenBacktest} className="w-full border border-[#2a2f3a] text-slate-200 py-3 rounded-lg text-sm">
         Backtest e Laboratório B3 (comparar com o CDI)
       </button>
-      <p className="text-xs text-slate-500 leading-relaxed">
-        Alvo e stop dos indicadores: {ATR_TARGET_MULT} e {ATR_STOP_MULT} ATR. Resultados já descontam taxa e derrapagem, sem imposto.
-      </p>
     </div>
   );
 };

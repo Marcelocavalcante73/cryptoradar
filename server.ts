@@ -9,8 +9,8 @@ import { runBacktest } from './src/services/backtest';
 import { binanceGet } from './server/universe';
 import { getBatchJob, startBatchJob } from './server/backtestJob';
 import { getLabJob, startLabJob } from './server/b3LabJob';
-import { aiConfig, aiExplain, aiSummary } from './server/aiAnalyst';
-import { getAiEngineState, runAiEngineScan, evaluateSignalWithAiEngine, loadAiEngineState } from './server/aiEngine';
+import { aiConfig } from './server/aiAnalyst';
+import { getAiEngineState, runAiEngineScan, evaluateSignalWithAiEngine, loadAiEngineState, startAiEngineTracker } from './server/aiEngine';
 import { getAiSwingState, runAiSwing, loadAiSwing, startAiSwing } from './server/aiSwing';
 import { getB3State, runB3Scan, startB3Scanner, ensureB3Scan, loadB3State } from './server/b3Scanner';
 import { getTrendState, runTrendScan, startTrendScanner, ensureTrendScan, loadTrendState } from './server/trendScanner';
@@ -379,11 +379,7 @@ app.post('/api/trend/scan', (req: Request, res: Response) => {
 });
 
 /**
- * Análise com IA (Gemini ou ChatGPT): só explica e resume o que os scanners calcularam.
- *  GET  /api/ai/status                  ligada? qual provedor?
- *  POST /api/ai/explain {kind, id}      explica um sinal (crypto-signal | crypto-trend | b3-signal | b3-trend)
- *  GET  /api/ai/summary?section=b3      resumo do dia (crypto | b3)
- * Usa a chave de acesso (X-Access-Key) quando ela existe, para que ninguém gaste a sua cota de IA.
+ * Proteção das rotas que gastam cota de IA: chave de acesso (X-Access-Key), quando ela existe, e 20 pedidos por minuto por IP.
  */
 const aiHits = new Map<string, number[]>();
 function aiLimited(ip: string): boolean {
@@ -400,13 +396,6 @@ const aiGuard = (req: Request, res: Response): boolean => {
   if (aiLimited(clientIp(req))) { res.status(429).json({ error: 'Muitas análises seguidas. Aguarde um minuto.' }); return false; }
   return true;
 };
-app.get('/api/ai/status', (_req: Request, res: Response) => { const c = aiConfig(); res.json({ enabled: c.enabled, provider: c.provider, model: c.model }); });
-app.post('/api/ai/explain', async (req: Request, res: Response) => {
-  if (!aiGuard(req, res)) return;
-  const r = await aiExplain(req.body?.kind, req.body?.id);
-  const status = (r.status === 502 || r.status === 503 || r.status === 504 || r.status === 403) ? 500 : r.status;
-  res.status(status).json(r.json);
-});
 /**
  *  GET  /api/ai/swing        motor de IA da B3: sinais, decisões da última rodada e mercado
  *  POST /api/ai/swing/run    pede uma rodada de decisões agora
@@ -417,12 +406,6 @@ app.post('/api/ai/swing/run', async (req: Request, res: Response) => {
   if (!aiConfig().enabled) return res.status(503).json({ error: 'A IA está desligada. Defina GEMINI_API_KEY ou OPENAI_API_KEY no servidor.' });
   const r = await runAiSwing(true);
   res.status(r.ok ? 200 : 502).json({ ...r, state: getAiSwingState() });
-});
-app.get('/api/ai/summary', async (req: Request, res: Response) => {
-  if (!aiGuard(req, res)) return;
-  const r = await aiSummary(req.query.section);
-  const status = (r.status === 502 || r.status === 503 || r.status === 504 || r.status === 403) ? 500 : r.status;
-  res.status(status).json(r.json);
 });
 
 /**
@@ -544,6 +527,7 @@ async function startServer() {
     startTrendScanner();
     startB3Scanner();
     startAiSwing();
+    startAiEngineTracker();
   }
 
   app.listen(PORT, '0.0.0.0', () => {

@@ -9,6 +9,12 @@ export interface AiEngineStatePayload {
   lastError: string | null;
   marketRegime: string;
   marketSummary: string;
+  bitcoinBullish?: boolean | null;
+  blocked?: { symbol: string; why: string }[];
+  stats?: {
+    closed: number; open: number; wins: number; winRate: number; profitFactor: number | null; avgNetPct: number;
+    readiness: { status: 'collecting' | 'failed' | 'ready'; headline: string; checks: { label: string; ok: boolean; detail: string }[] };
+  };
   signals: TechnicalSignal[];
 }
 

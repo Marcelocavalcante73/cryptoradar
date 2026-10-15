@@ -62,7 +62,6 @@ export const AiSwingView: React.FC<{ capital: number; riskPercent: number; info:
   };
 
   const readiness = useMemo(() => evaluateB3Readiness(st?.signals ?? []), [st?.signals]);
-  const rulesReadiness = useMemo(() => evaluateB3Readiness(info?.indicators.signals ?? []), [info?.indicators.signals]);
 
   if (!st) {
     return (
@@ -88,25 +87,20 @@ export const AiSwingView: React.FC<{ capital: number; riskPercent: number; info:
 
       <section className={card}>
         <p className="text-sm text-slate-300 leading-relaxed">
-          A IA ({st.enabled ? who(st.provider) : 'desligada'}) recebe o mercado e os indicadores de cada ação e decide o que comprar, com stop, alvo e prazo.
-          O código só impõe travas: mercado em alta, stop de {AI_RULES.stopAtr[0]} a {AI_RULES.stopAtr[1]} ATR, alvo de pelo menos {AI_RULES.minRewardRisk}x o stop,
-          confiança mínima {AI_RULES.minConfidence} e no máximo {AI_RULES.maxNew} sinais por dia.
+          {st.enabled ? who(st.provider) : 'IA desligada'} decide as compras a partir do mercado e dos indicadores. Travas: mercado em alta, stop de {AI_RULES.stopAtr[0]} a {AI_RULES.stopAtr[1]} ATR, confiança mínima {AI_RULES.minConfidence}, até {AI_RULES.maxNew} sinais por dia.
         </p>
         <button onClick={run} disabled={busy || !st.enabled || st.running} className="w-full mt-3 bg-slate-100 text-slate-900 font-semibold py-3 rounded-lg disabled:opacity-40">
           {busy || st.running ? 'Analisando o mercado…' : 'Pedir decisão agora'}
         </button>
-        {!st.enabled && <p className="text-xs text-amber-300 mt-2">IA desligada: defina GEMINI_API_KEY ou OPENAI_API_KEY no servidor e publique de novo.</p>}
+        {!st.enabled && <p className="text-xs text-amber-300 mt-2">Defina GEMINI_API_KEY ou OPENAI_API_KEY no servidor e publique de novo.</p>}
         {msg && <p className="text-sm text-slate-200 mt-2">{msg}</p>}
         {(error || st.lastError) && <p className="text-xs text-rose-400 mt-2">{error ?? st.lastError}</p>}
-        <p className="text-xs text-slate-500 mt-2">Decide sozinha uma vez por dia, depois que o pregão fecha (21h, Brasília).</p>
       </section>
 
       <section>
         <h3 className="text-sm font-medium text-slate-300 mb-2">Compras decididas pela IA ({active.length})</h3>
         {active.length === 0 ? (
-          <p className={`${card} text-sm text-slate-400`}>
-            Nenhuma posição aberta. É normal: o padrão da IA é esperar e só comprar quando o conjunto justificar.
-          </p>
+          <p className={`${card} text-sm text-slate-400`}>Nenhuma posição aberta. O padrão da IA é esperar.</p>
         ) : (
           <div className="space-y-3">
             {active.map((s) => {
@@ -136,23 +130,23 @@ export const AiSwingView: React.FC<{ capital: number; riskPercent: number; info:
       </section>
 
       {st.log && (
-        <section>
-          <h3 className="text-sm font-medium text-slate-300 mb-2">Última decisão ({buys.length} compra{buys.length === 1 ? '' : 's'} de {st.log.items.length} ações)</h3>
-          <div className={`${card} !p-0 divide-y divide-[#23272f]`}>
-            {[...st.log.items].sort((a, b) => (a.action === b.action ? b.confidence - a.confidence : a.action === 'BUY' ? -1 : 1)).slice(0, 12).map((i) => (
-              <div key={i.symbol} className="px-4 py-2.5">
+        <details className={card}>
+          <summary className="cursor-pointer text-sm text-slate-300">Última decisão: {buys.length} compra{buys.length === 1 ? '' : 's'} em {st.log.items.length} ações</summary>
+          <div className="divide-y divide-[#23272f] mt-2">
+            {[...st.log.items].sort((a, b) => (a.action === b.action ? b.confidence - a.confidence : a.action === 'BUY' ? -1 : 1)).slice(0, 10).map((i) => (
+              <div key={i.symbol} className="py-2">
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-slate-100">{i.symbol}</span>
                   <span className={i.action === 'BUY' ? 'text-emerald-400' : 'text-slate-400'}>{i.action === 'BUY' ? 'Comprar' : 'Esperar'} · {i.confidence}</span>
                 </div>
-                {i.reason && <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{i.reason}</p>}
+                {i.reason && <p className="text-xs text-slate-500 mt-0.5">{i.reason}</p>}
               </div>
             ))}
           </div>
           {st.log.blocked.length > 0 && (
-            <p className="text-xs text-amber-300 mt-2 leading-relaxed">Barrado pelas travas: {st.log.blocked.map((b) => `${b.symbol} (${b.why})`).join('; ')}.</p>
+            <p className="text-xs text-amber-300 mt-2">Barrado pelas travas: {st.log.blocked.map((b) => `${b.symbol} (${b.why})`).join('; ')}.</p>
           )}
-        </section>
+        </details>
       )}
 
       {closed.length > 0 && (
@@ -175,14 +169,12 @@ export const AiSwingView: React.FC<{ capital: number; riskPercent: number; info:
         </section>
       )}
 
-      <section className={card}>
-        <div className="flex items-center justify-between">
-          <span className="text-base font-semibold text-slate-100">A IA ganha do motor de regras?</span>
+      <details className={card}>
+        <summary className="cursor-pointer flex items-center justify-between text-sm text-slate-200">
+          <span>Pronta para valor real?</span>
           <span className={`w-2.5 h-2.5 rounded-full ${readiness.status === 'ready' ? 'bg-emerald-400' : readiness.status === 'failed' ? 'bg-rose-400' : 'bg-amber-400'}`} />
-        </div>
-        <p className="text-xs text-slate-400 leading-relaxed mt-1">
-          A IA não pode ser testada no passado (ela já "conhece" o histórico), então a prova é ao vivo, com os mesmos critérios dos outros motores: {readiness.headline}
-        </p>
+        </summary>
+        <p className="text-xs text-slate-400 mt-2">{readiness.headline}</p>
         <ul className="mt-2 space-y-1">
           {readiness.checks.map((c) => (
             <li key={c.label} className="flex items-start justify-between gap-3 text-xs">
@@ -191,14 +183,10 @@ export const AiSwingView: React.FC<{ capital: number; riskPercent: number; info:
             </li>
           ))}
         </ul>
-        <p className="text-[11px] text-slate-500 mt-3">
-          Para comparar: o motor de regras (aba Sinais) tem {info?.indicators.signals.filter(isB3Done).length ?? 0} operações encerradas ao vivo; status: {rulesReadiness.status === 'collecting' ? 'coletando' : rulesReadiness.status === 'ready' ? 'critérios atingidos' : 'reprovado'}.
-        </p>
-      </section>
+        <p className="text-[11px] text-slate-500 mt-2">Só vale o resultado ao vivo: a IA não pode ser testada no passado.</p>
+      </details>
 
-      <p className="text-xs text-slate-500 leading-relaxed">
-        Em validação: só simulação, sem dinheiro real. A decisão da IA é estatística e pode errar; stop e alvo valem sempre. Imposto e corretagem não incluídos. Não é recomendação de investimento.
-      </p>
+      <p className="text-xs text-slate-500">Em validação: só simulação. Não é recomendação de investimento.</p>
     </div>
   );
 };

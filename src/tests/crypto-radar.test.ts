@@ -62,7 +62,10 @@ import { summarizeBatch, riskCurve, withoutBest } from '../services/backtestBatc
 import { detectTrendEntry, updateTrendSignal, canEnter, splitClosed, trendSignalResult, evaluateTrendReadiness, TrendSignal } from '../services/trendSignals';
 import { runTrendBacktest, btcRegimeByDay, TREND_RULES } from '../services/trendBacktest';
 import { marketTrend, detectIndicatorEntry, updateIndicatorSignal, indicatorSignalResult, evaluateB3Readiness, b3Sizing, B3Signal } from '../services/b3Signals';
-import { aiConfig, aiExplain, aiSummary, generateText, resetAiState } from '../../server/aiAnalyst';
+import { aiConfig, generateText, resetAiState, takeBudget } from '../../server/aiAnalyst';
+import { guardSignals, resolveOutcome, liveStats } from '../services/aiGuards';
+import { runAiEngineScan, getAiEngineState, resetAiEngineStates, refreshAiOutcomes } from '../../server/aiEngine';
+import { scanners } from '../../server/scanner';
 import { computeRow, parseDecisions, pickEntries, aiSignalFrom, buildPrompt, AiDecision } from '../services/aiSwing';
 import { runAiSwing, getAiSwingState, resetAiSwing } from '../../server/aiSwing';
 import { readJson, OldServerError } from '../services/http';
@@ -1550,9 +1553,9 @@ console.log('\n--- B3 swing trade ---');
 }
 
 // ============================================================================
-// ANÁLISE COM IA (GEMINI / CHATGPT): SÓ EXPLICA O QUE O SCANNER CALCULOU
+// PROVEDOR DE IA (GEMINI / CHATGPT)
 // ============================================================================
-console.log('\n--- Análise com IA ---');
+console.log('\n--- Provedor de IA ---');
 {
   const saved = { g: process.env.GEMINI_API_KEY, o: process.env.OPENAI_API_KEY, p: process.env.AI_PROVIDER, m: process.env.AI_MODEL, l: process.env.AI_DAILY_LIMIT };
   const setEnv = (g?: string, o?: string, p?: string) => {
@@ -1574,77 +1577,44 @@ console.log('\n--- Análise com IA ---');
   setEnv(GKEY, undefined, 'openai');
   assert(!aiConfig().enabled, 'IA: provedor pedido sem a chave dele => desligada');
 
-  // Estado dos scanners com um sinal conhecido
-  resetB3State();
-  const b3s = getB3State();
-  b3s.market = { bullish: true, close: 130000, sma50: 128000, sma200: 120000, change20dPct: 2, label: 'Alta' };
-  b3s.indicators.signals = [{ id: 'WEGE3-ind-1', symbol: 'WEGE3', signalDay: 1, createdAt: 1, refPrice: 45, stopPrice: 43.5, targetPrice: 48, atr: 1, score: 75, status: 'OPEN' }];
-
   const calls: { url: string; init: any }[] = [];
   const realFetchAi = globalThis.fetch;
   let reply: (url: string) => Response = (url) => url.includes('googleapis')
-    ? new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'Explicação do Gemini.' }] } }] }), { status: 200 })
-    : new Response(JSON.stringify({ choices: [{ message: { content: 'Explicação do ChatGPT.' } }] }), { status: 200 });
+    ? new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'resposta do Gemini' }] } }] }), { status: 200 })
+    : new Response(JSON.stringify({ choices: [{ message: { content: 'resposta do ChatGPT' } }] }), { status: 200 });
   globalThis.fetch = ((url: any, init: any) => { calls.push({ url: String(url), init }); return Promise.resolve(reply(String(url))); }) as typeof fetch;
 
   setEnv(GKEY);
   resetAiState();
-  const g1 = await aiExplain('b3-signal', 'WEGE3-ind-1');
-  assert(g1.status === 200 && g1.json.text === 'Explicação do Gemini.' && g1.json.provider === 'gemini' && g1.json.cached === false, 'IA: explica um sinal da B3 com o Gemini', JSON.stringify(g1));
+  const t1 = await generateText('sistema', 'usuário', { json: true, temperature: 0.2, maxTokens: 900 });
   const gb = JSON.parse(calls[0].init.body);
-  assert(calls[0].init.headers['x-goog-api-key'] === GKEY && !calls[0].url.includes(GKEY), 'IA: chave do Gemini vai no cabeçalho, não na URL');
-  const userText: string = gb.contents[0].parts[0].text;
-  assert(userText.includes('WEGE3') && userText.includes('"stop":43.5') && userText.includes('"alvo":48'), 'IA: o texto enviado traz os dados do sinal, montados no servidor');
-  assert(/não preveja preços/i.test(gb.systemInstruction.parts[0].text) && /não recomende/i.test(gb.systemInstruction.parts[0].text), 'IA: instrução proíbe previsão de preço e recomendação');
-  const g2 = await aiExplain('b3-signal', 'WEGE3-ind-1');
-  assert(g2.json.cached === true && calls.length === 1, 'IA: segunda explicação igual vem do cache, sem nova chamada');
-  b3s.indicators.signals[0] = { ...b3s.indicators.signals[0], status: 'STOP', exitPrice: 43.5 } as any;
-  await aiExplain('b3-signal', 'WEGE3-ind-1');
-  assert(calls.length === 2, 'IA: sinal que mudou de estado gera nova explicação');
+  assert(t1 === 'resposta do Gemini' && calls[0].init.headers['x-goog-api-key'] === GKEY && !calls[0].url.includes(GKEY), 'IA: Gemini responde e a chave vai no cabeçalho, não na URL');
+  assert(gb.generationConfig.responseMimeType === 'application/json' && gb.generationConfig.temperature === 0.2 && gb.generationConfig.maxOutputTokens === 900 && gb.systemInstruction.parts[0].text === 'sistema', 'IA: Gemini recebe JSON, temperatura, limite e instrução de sistema');
 
-  assert((await aiExplain('b3-signal', 'NAO-EXISTE')).status === 404, 'IA: sinal inexistente => 404');
-  assert((await aiExplain('hack', 'x')).status === 400 && (await aiExplain('b3-signal', 'x'.repeat(200))).status === 400 && (await aiExplain('b3-signal', 5)).status === 400, 'IA: pedido inválido => 400');
-  assert((await aiSummary('qualquer')).status === 400, 'IA: seção inválida => 400');
-
-  const sm = await aiSummary('b3');
-  assert(sm.status === 200 && sm.json.text === 'Explicação do Gemini.', 'IA: resumo do dia da B3');
-  assert(JSON.parse(calls[calls.length - 1].init.body).contents[0].parts[0].text.includes('"leitura":"Alta"'), 'IA: resumo traz a leitura do mercado');
-  const sc = await aiSummary('crypto');
-  assert(sc.status === 200, 'IA: resumo do dia das criptos');
-
-  // ChatGPT
   setEnv(undefined, OKEY);
-  resetAiState();
   calls.length = 0;
-  const o1 = await aiExplain('b3-signal', 'WEGE3-ind-1');
-  assert(o1.status === 200 && o1.json.text === 'Explicação do ChatGPT.' && o1.json.provider === 'openai', 'IA: explica com o ChatGPT');
-  assert(calls[0].url === 'https://api.openai.com/v1/chat/completions' && calls[0].init.headers.Authorization === `Bearer ${OKEY}`, 'IA: chave da OpenAI vai no cabeçalho Authorization');
-  assert(JSON.parse(calls[0].init.body).messages[0].role === 'system', 'IA: ChatGPT recebe a instrução como mensagem de sistema');
+  const t2 = await generateText('sistema', 'usuário', { json: true });
+  const ob = JSON.parse(calls[0].init.body);
+  assert(t2 === 'resposta do ChatGPT' && calls[0].url === 'https://api.openai.com/v1/chat/completions' && calls[0].init.headers.Authorization === `Bearer ${OKEY}`, 'IA: ChatGPT responde e a chave vai no cabeçalho Authorization');
+  assert(ob.response_format.type === 'json_object' && ob.messages[0].role === 'system', 'IA: ChatGPT recebe JSON e a instrução como mensagem de sistema');
 
-  // Falhas e limites
-  resetAiState();
   reply = () => new Response('', { status: 401 });
-  const bad = await aiExplain('b3-signal', 'WEGE3-ind-1');
-  assert(bad.status === 502 && String(bad.json.error).includes('401'), 'IA: erro do provedor vira mensagem clara (502)', JSON.stringify(bad));
+  let e1 = ''; try { await generateText('a', 'b'); } catch (e: any) { e1 = e.message; }
+  assert(e1.includes('401'), 'IA: erro do provedor vira mensagem clara', e1);
   reply = () => new Response(JSON.stringify({ choices: [] }), { status: 200 });
-  assert((await aiExplain('b3-signal', 'WEGE3-ind-1')).status === 502, 'IA: resposta vazia => 502');
-  let threw = false; try { setEnv(); await generateText('a', 'b'); } catch { threw = true; }
-  assert(threw, 'IA: sem chave, generateText recusa');
+  let e2 = ''; try { await generateText('a', 'b'); } catch (e: any) { e2 = e.message; }
+  assert(/vazio/.test(e2), 'IA: resposta vazia => erro', e2);
   setEnv();
-  assert((await aiExplain('b3-signal', 'WEGE3-ind-1')).status === 503, 'IA: desligada => 503 com instrução de como ligar');
+  let e3 = ''; try { await generateText('a', 'b'); } catch (e: any) { e3 = e.message; }
+  assert(/desligada/.test(e3), 'IA: sem chave, generateText recusa');
 
-  setEnv(GKEY);
   process.env.AI_DAILY_LIMIT = '2';
   resetAiState();
-  reply = (url) => new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] }), { status: 200 });
-  const ids = ['a', 'b', 'c'].map((x) => ({ ...b3s.indicators.signals[0], id: `L-${x}` }));
-  b3s.indicators.signals.push(...(ids as any));
-  const r1 = await aiExplain('b3-signal', 'L-a'), r2 = await aiExplain('b3-signal', 'L-b'), r3 = await aiExplain('b3-signal', 'L-c');
-  assert(r1.status === 200 && r2.status === 200 && r3.status === 429, 'IA: limite diário de chamadas protege o custo (429)');
+  assert(takeBudget() && takeBudget() && !takeBudget(), 'IA: limite diário de chamadas protege o custo');
 
   globalThis.fetch = realFetchAi;
   for (const [k, v] of [['GEMINI_API_KEY', saved.g], ['OPENAI_API_KEY', saved.o], ['AI_PROVIDER', saved.p], ['AI_MODEL', saved.m], ['AI_DAILY_LIMIT', saved.l]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
-  resetB3State();
+  resetAiState();
 }
 
 console.log('\n--- Resposta HTML no lugar de JSON ---');
@@ -2206,6 +2176,135 @@ console.log('\n--- Motor de IA da B3 ---');
   globalThis.fetch = realFetchW;
   for (const [k, v] of [['GEMINI_API_KEY', saved.g], ['OPENAI_API_KEY', saved.o], ['AI_PROVIDER', saved.p]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   resetAiSwing(); resetAiState();
+}
+
+
+// ============================================================================
+// MOTOR DE IA DAS CRIPTOS: TRAVAS, DADOS PARA A IA E ACOMPANHAMENTO
+// ============================================================================
+console.log('\n--- Motor de IA das criptos ---');
+{
+  const prices = new Map([['BTCUSDT', 100], ['ETHUSDT', 50], ['SOLUSDT', 20]]);
+  const base = { market: 'spot' as const, prices, allowed: new Set(['BTCUSDT', 'ETHUSDT', 'SOLUSDT']), bullish: true, openKeys: new Set<string>() };
+  const L = (symbol: string, o: any = {}) => ({ symbol, direction: 'LONG', confidence: 80, entryPrice: 999, targetPrice: prices.get(symbol)! * 1.06, stopLossPrice: prices.get(symbol)! * 0.97, ...o });
+
+  const g1 = guardSignals([L('BTCUSDT')], base);
+  assert(g1.approved.length === 1 && g1.approved[0].entry === 100 && g1.approved[0].confidence === 80, 'IA cripto: a entrada é sempre o preço atual, nunca o que a IA escreveu');
+  assert(guardSignals([L('XRPUSDT')], base).blocked[0]?.why.includes('fora da lista'), 'IA cripto: ativo fora da lista é barrado');
+  assert(guardSignals([L('BTCUSDT', { direction: 'SHORT', targetPrice: 94, stopLossPrice: 103 })], base).blocked[0]?.why.includes('spot'), 'IA cripto: SHORT no spot é barrado');
+  assert(guardSignals([L('BTCUSDT')], { ...base, bullish: false }).blocked[0]?.why.includes('abaixo da média'), 'IA cripto: Bitcoin em baixa bloqueia compras');
+  const fut = { ...base, market: 'futures' as const };
+  assert(guardSignals([L('BTCUSDT', { direction: 'SHORT', targetPrice: 94, stopLossPrice: 103 })], fut).blocked[0]?.why.includes('vendas bloqueadas'), 'IA cripto: com Bitcoin em alta, SHORT em futuros é barrado');
+  assert(guardSignals([L('BTCUSDT', { direction: 'SHORT', targetPrice: 94, stopLossPrice: 103 })], { ...fut, bullish: false }).approved.length === 1, 'IA cripto: com Bitcoin em baixa, SHORT em futuros é aprovado');
+  assert(guardSignals([L('BTCUSDT', { confidence: 59 })], base).blocked[0]?.why.includes('confiança'), 'IA cripto: confiança abaixo de 60 é barrada');
+  assert(guardSignals([L('BTCUSDT', { stopLossPrice: 105 })], base).blocked[0]?.why.includes('lado errado'), 'IA cripto: stop do lado errado é barrado');
+  assert(guardSignals([L('BTCUSDT', { stopLossPrice: 99.9 })], base).blocked[0]?.why.includes('stop a'), 'IA cripto: stop colado demais (menos de 0,5%) é barrado');
+  assert(guardSignals([L('BTCUSDT', { stopLossPrice: 80, targetPrice: 130 })], base).blocked[0]?.why.includes('stop a'), 'IA cripto: stop longe demais (mais de 15%) é barrado');
+  assert(guardSignals([L('BTCUSDT', { targetPrice: 102 })], base).blocked[0]?.why.includes('risco/retorno'), 'IA cripto: alvo curto demais (menos de 1,5x o stop) é barrado');
+  assert(guardSignals([L('BTCUSDT', { targetPrice: 100 + 3 * 6.5 })], base).blocked[0]?.why.includes('risco/retorno'), 'IA cripto: alvo fantasioso (mais de 6x o stop) é barrado');
+  assert(guardSignals([L('BTCUSDT')], { ...base, openKeys: new Set(['BTCUSDT|LONG']) }).blocked[0]?.why.includes('já há sinal'), 'IA cripto: não abre segundo sinal igual');
+  assert(guardSignals([L('BTCUSDT', { targetPrice: NaN })], base).blocked.length === 1 && guardSignals([null, 5, {}] as any, base).approved.length === 0, 'IA cripto: dados inválidos não quebram nada');
+  const many = new Map(Array.from({ length: 8 }, (_, i) => [`C${i}USDT`, 10] as [string, number]));
+  const gm = guardSignals(Array.from({ length: 8 }, (_, i) => ({ symbol: `C${i}USDT`, direction: 'LONG', confidence: 70 + i, targetPrice: 10.6, stopLossPrice: 9.7 })), { ...base, prices: many, allowed: new Set(many.keys()) });
+  assert(gm.approved.length === 5 && gm.approved[0].confidence === 77 && gm.blocked.length === 3, 'IA cripto: no máximo 5 sinais por rodada, os de maior confiança');
+
+  // Acompanhamento com velas de 1h
+  const t0 = 1_700_000_000_000;
+  const sg = { direction: 'LONG' as const, targetPrice: 106, stopLossPrice: 97, createdAt: t0, timeframe: '4h' };
+  const h = (i: number, high: number, low: number, close = 100) => ({ timestamp: t0 + i * 3600e3, high, low, close });
+  assert(resolveOutcome(sg, [h(-1, 90, 80), h(0, 101, 99)], t0 + 5 * 3600e3) === null, 'IA cripto: vela anterior ao sinal é ignorada; sem alvo nem stop continua aberto');
+  assert(resolveOutcome(sg, [h(0, 101, 99), h(1, 107, 99)], t0 + 5 * 3600e3)?.status === 'TARGET_HIT', 'IA cripto: alvo atingido pela máxima da vela');
+  assert(resolveOutcome(sg, [h(0, 101, 99), h(1, 101, 96)], t0 + 5 * 3600e3)?.status === 'STOP_HIT', 'IA cripto: stop atingido pela mínima da vela, mesmo sem o fechamento passar');
+  assert(resolveOutcome(sg, [h(1, 108, 95)], t0 + 5 * 3600e3)?.status === 'STOP_HIT', 'IA cripto: stop e alvo na mesma vela => vale o stop');
+  const sh = { ...sg, direction: 'SHORT' as const, targetPrice: 94, stopLossPrice: 103 };
+  assert(resolveOutcome(sh, [h(1, 101, 93)], t0 + 5 * 3600e3)?.status === 'TARGET_HIT' && resolveOutcome(sh, [h(1, 104, 99)], t0 + 5 * 3600e3)?.status === 'STOP_HIT', 'IA cripto: SHORT usa o lado contrário (alvo pela mínima, stop pela máxima)');
+  const ex = resolveOutcome(sg, [h(0, 101, 99, 100.5)], t0 + 9 * 24 * 3600e3);
+  assert(ex?.status === 'EXPIRED' && ex.closePrice === 100.5, 'IA cripto: passou do prazo (8 dias em 4h) => expirado no último preço');
+  const ls = liveStats([
+    { status: 'TARGET_HIT', direction: 'LONG', entryPrice: 100, closePrice: 106, createdAt: t0 },
+    { status: 'STOP_HIT', direction: 'LONG', entryPrice: 100, closePrice: 97, createdAt: t0 },
+    { status: 'TARGET_HIT', direction: 'SHORT', entryPrice: 100, closePrice: 94, createdAt: t0 },
+    { status: 'OPEN', direction: 'LONG', entryPrice: 100, createdAt: t0 }
+  ], t0 + 3 * 86400000);
+  assert(ls.closed === 3 && ls.open === 1 && ls.wins === 2 && Math.abs(ls.winRate - 66.7) < 0.1 && ls.profitFactor! > 1 && ls.readiness.status === 'collecting', 'IA cripto: estatística ao vivo desconta custos e conta SHORT ao contrário', JSON.stringify(ls));
+
+  // Rodada completa com Binance e Gemini simulados
+  const saved = { g: process.env.GEMINI_API_KEY, o: process.env.OPENAI_API_KEY, p: process.env.AI_PROVIDER };
+  process.env.GEMINI_API_KEY = 'g'.repeat(30); delete process.env.OPENAI_API_KEY; delete process.env.AI_PROVIDER;
+  resetAiState(); resetAiEngineStates();
+  (scanners.spot.state as any).universe = { source: 'test', fetchedAt: Date.now(), skipped: [], exchanges: ['binance'], count: 3, coins: [
+    { rank: 1, baseAsset: 'BTC', name: 'Bitcoin', symbol: 'BTCUSDT' }, { rank: 2, baseAsset: 'ETH', name: 'Ethereum', symbol: 'ETHUSDT' }, { rank: 3, baseAsset: 'SOL', name: 'Solana', symbol: 'SOLUSDT' }, { rank: 4, baseAsset: 'XRP', name: 'XRP', symbol: 'XRPUSDT' }] };
+  const IV: Record<string, number> = { '1h': 3600e3, '4h': 14400e3, '1d': 86400e3 };
+  let btcUp = true, hourExtreme: 'none' | 'target' = 'none', aiCalls2 = 0, aiPrompt = '';
+  const nowMs = Date.now();
+  const klines = (u: URL) => {
+    const iv = u.searchParams.get('interval')!, n = Number(u.searchParams.get('limit')), sym = u.searchParams.get('symbol')!;
+    const step = IV[iv], end = Math.floor(nowMs / step) * step - step;
+    return Array.from({ length: n }, (_, i) => {
+      const ts = end - (n - 1 - i) * step;
+      let close = sym === 'BTCUSDT' && iv === '1d' ? 100 * Math.pow(btcUp ? 1.002 : 0.998, i) : 100 + Math.sin(i / 7) * 4 + i * 0.02;
+      let high = close * 1.005, low = close * 0.995;
+      if (iv === '1h' && hourExtreme === 'target') { close = 200; low = 199; high = i >= n - 3 ? 215 : 201; }
+      return [ts, String(close), String(high), String(low), String(close), String(1000 + (i % 6) * 100), ts + step - 1, '0', 0, '0', '0', '0'];
+    });
+  };
+  const realFetchC2 = globalThis.fetch;
+  const aiJson = () => JSON.stringify({ marketRegime: 'ALTA SELETIVA', marketSummary: 'Mercado em alta.', signals: [
+    { symbol: 'BTCUSDT', baseAsset: 'BTC', direction: 'LONG', confidence: 82, entryPrice: 1, targetPrice: 0, stopLossPrice: 0, thesis: 'RSI saudável e tendência de alta.', riskLevel: 'MEDIO', strategy: 'AI_ENGINE_MOMENTUM' },
+    { symbol: 'ETHUSDT', baseAsset: 'ETH', direction: 'SHORT', confidence: 90, targetPrice: 1, stopLossPrice: 2 },
+    { symbol: 'SOLUSDT', baseAsset: 'SOL', direction: 'LONG', confidence: 40, targetPrice: 1, stopLossPrice: 1 }
+  ] });
+  globalThis.fetch = ((url: any, init: any) => {
+    const u = new URL(decodeURIComponent(String(url)));
+    if (u.pathname.endsWith('/api/v3/klines')) return Promise.resolve(new Response(JSON.stringify(klines(u)), { status: 200 }));
+    if (u.pathname.endsWith('/api/v3/ticker/price')) return Promise.resolve(new Response(JSON.stringify([{ symbol: 'BTCUSDT', price: '200' }, { symbol: 'ETHUSDT', price: '100' }, { symbol: 'SOLUSDT', price: '50' }, { symbol: 'XRPUSDT', price: '1' }]), { status: 200 }));
+    if (u.hostname.includes('googleapis')) {
+      aiCalls2++; aiPrompt = String(init?.body ?? '');
+      // a IA devolve alvo e stop em torno do preço real (200)
+      const j = JSON.parse(aiJson());
+      j.signals[0].targetPrice = 212; j.signals[0].stopLossPrice = 194; j.signals[1].targetPrice = 94; j.signals[1].stopLossPrice = 106;
+      return Promise.resolve(new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(j) }] } }] }), { status: 200 }));
+    }
+    return Promise.reject(new Error('url inesperada: ' + u.href));
+  }) as typeof fetch;
+
+  const out = await runAiEngineScan('spot');
+  assert(!out.lastError && aiCalls2 === 1, 'IA cripto: rodada completa roda sem erro e chama a IA uma vez', String(out.lastError));
+  const bodyTxt = JSON.parse(aiPrompt).contents[0].parts[0].text as string;
+  assert(bodyTxt.includes('bitcoin_acima_da_media_200d":true') && bodyTxt.includes('"rsi"') && bodyTxt.includes('"atrPct"') && bodyTxt.includes('BTCUSDT'), 'IA cripto: a IA recebe o mercado (Bitcoin vs média de 200) e os indicadores de cada moeda');
+  assert(out.signals.length === 1 && out.signals[0].symbol === 'BTCUSDT' && out.signals[0].entryPrice === 200 && out.signals[0].status === 'OPEN', 'IA cripto: só o sinal válido vira operação, com entrada no preço atual (200), não no que a IA escreveu', JSON.stringify(out.signals.map((x) => [x.symbol, x.entryPrice])));
+  assert(out.blocked!.some((b) => b.symbol === 'ETHUSDT' && /spot/.test(b.why)) && out.blocked!.some((b) => b.symbol === 'SOLUSDT' && /confiança/.test(b.why)), 'IA cripto: o que as travas barraram fica registrado com o motivo');
+  assert(out.bitcoinBullish === true && out.marketRegime === 'ALTA SELETIVA' && out.stats!.open === 1 && out.stats!.closed === 0, 'IA cripto: guarda a leitura do Bitcoin e a estatística ao vivo');
+
+  const out2 = await runAiEngineScan('spot');
+  assert(out2.signals.length === 1 && out2.blocked!.some((b) => /já há sinal/.test(b.why)), 'IA cripto: nova rodada mantém o histórico e não duplica o sinal aberto', String(out2.signals.length));
+
+  hourExtreme = 'target';
+  (getAiEngineState('spot').signals[0] as any).createdAt -= 6 * 3600e3; // o sinal nasceu 6h atrás, antes das últimas velas
+  await refreshAiOutcomes('spot');
+  const out3 = getAiEngineState('spot');
+  assert(out3.signals[0].status === 'TARGET_HIT' && out3.signals[0].closePrice === 212 && out3.stats!.closed === 1 && out3.stats!.winRate === 100, 'IA cripto: o acompanhamento fecha o sinal pelo alvo (velas de 1h) e a estatística atualiza', JSON.stringify(out3.signals[0]));
+
+  // Bitcoin em baixa: a compra da IA é barrada
+  resetAiEngineStates(); btcUp = false; hourExtreme = 'none';
+  const out4 = await runAiEngineScan('spot');
+  assert(out4.signals.length === 0 && out4.bitcoinBullish === false && out4.blocked!.some((b) => /abaixo da média/.test(b.why)), 'IA cripto: Bitcoin em baixa => nenhuma compra, com o motivo registrado');
+
+  // Resposta fora do formato
+  resetAiEngineStates(); btcUp = true;
+  globalThis.fetch = ((url: any, init: any) => {
+    const u = new URL(decodeURIComponent(String(url)));
+    if (u.pathname.endsWith('/api/v3/klines')) return Promise.resolve(new Response(JSON.stringify(klines(u)), { status: 200 }));
+    if (u.pathname.endsWith('/api/v3/ticker/price')) return Promise.resolve(new Response(JSON.stringify([{ symbol: 'BTCUSDT', price: '200' }, { symbol: 'ETHUSDT', price: '100' }, { symbol: 'SOLUSDT', price: '50' }]), { status: 200 }));
+    return Promise.resolve(new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'não posso ajudar' }] } }] }), { status: 200 }));
+  }) as typeof fetch;
+  const out5 = await runAiEngineScan('spot');
+  assert(/formato/.test(out5.lastError ?? '') && out5.signals.length === 0, 'IA cripto: resposta fora do formato => erro claro e nenhum sinal', String(out5.lastError));
+
+  globalThis.fetch = realFetchC2;
+  for (const [k, v] of [['GEMINI_API_KEY', saved.g], ['OPENAI_API_KEY', saved.o], ['AI_PROVIDER', saved.p]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  resetAiEngineStates(); resetAiState();
+  (scanners.spot.state as any).universe = null;
 }
 
 console.log('\n========================================================');

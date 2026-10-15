@@ -5,12 +5,17 @@
  * gerar sinais com tese técnica, confiança (%) e preços de entrada, alvo e stop.
  */
 
-import { MarketType, SignalDirection } from '../src/types/crypto';
+import { CandleData, MarketType, SignalDirection } from '../src/types/crypto';
 import { getStateSafe, setStateSafe } from './stateStore';
-import { aiConfig } from './aiAnalyst';
-import { getScanState, StoredSignal } from './scanner';
-import { futuresPrices } from './futuresData';
+import { aiConfig, takeBudget, generateText } from './aiAnalyst';
+import { getScanState, sendTelegram, StoredSignal } from './scanner';
+import { futuresPrices, futuresKlines } from './futuresData';
 import { binanceGet } from './universe';
+import { parseBinanceKline } from '../src/services/apiService';
+import { marketTrend } from '../src/services/b3Signals';
+import { splitClosed } from '../src/services/trendSignals';
+import { computeRow, AiRow } from '../src/services/aiSwing';
+import { guardSignals, resolveOutcome, liveStats, AiLiveStats, AI_CRYPTO_RULES, HourCandle } from '../src/services/aiGuards';
 
 export interface AiEngineSignal {
   id: string;
@@ -30,6 +35,9 @@ export interface AiEngineSignal {
   indicatorsTriggered: string[];
   timestamp: string;
   createdAt: number;
+  closedAt?: number;
+  closePrice?: number;
+  alerted?: boolean;
   isDemo: false;
   isAiGenerated: true;
   disclaimer: string;
@@ -50,6 +58,9 @@ export interface AiEngineState {
   lastError: string | null;
   marketRegime: string;
   marketSummary: string;
+  bitcoinBullish?: boolean | null;
+  blocked?: { symbol: string; why: string }[];
+  stats?: AiLiveStats;
   signals: AiEngineSignal[];
 }
 
@@ -89,15 +100,25 @@ export async function loadAiEngineState(): Promise<void> {
 }
 
 export function getAiEngineState(market: MarketType = 'spot'): AiEngineState {
-  return aiEngineStates[market] || aiEngineStates.spot;
+  const st = aiEngineStates[market] || aiEngineStates.spot;
+  return { ...st, stats: liveStats(st.signals) };
+}
+
+/** Só para testes. */
+export function resetAiEngineStates() {
+  for (const m of ['spot', 'futures'] as const) {
+    aiEngineStates[m] = { ...aiEngineStates[m], running: false, lastScanAt: null, lastError: null, signals: [], blocked: [], bitcoinBullish: null };
+  }
 }
 
 /** Chama Gemini com suporte a fallback de modelos caso haja sobrecarga temporária */
 async function callGeminiEngine(prompt: string, timeoutMs = 28000): Promise<string> {
   const cfg = aiConfig();
-  if (!cfg.enabled || !process.env.GEMINI_API_KEY) {
-    throw new Error('Chave GEMINI_API_KEY não configurada no servidor');
+  if (!cfg.enabled) throw new Error('IA desligada: defina GEMINI_API_KEY ou OPENAI_API_KEY no servidor');
+  if (cfg.provider === 'openai') {
+    return generateText('Responda apenas com JSON válido, sem texto fora do JSON.', prompt, { json: true, temperature: 0.2, maxTokens: 2500, timeoutMs });
   }
+  if (!process.env.GEMINI_API_KEY) throw new Error('Chave GEMINI_API_KEY não configurada no servidor');
 
   const candidates = Array.from(new Set([
     'gemini-3.5-flash-lite',
@@ -164,9 +185,83 @@ async function callGeminiEngine(prompt: string, timeoutMs = 28000): Promise<stri
   throw lastErr || new Error('Nenhum modelo da IA respondeu');
 }
 
+const H4 = 4 * 3600e3;
+const fmtP = (n: number) => n.toLocaleString('en-US', { maximumFractionDigits: n >= 100 ? 2 : 6 });
+
+async function klinesFor(market: MarketType, symbol: string, interval: string, limit: number): Promise<CandleData[]> {
+  const raw: any[] = market === 'futures'
+    ? await futuresKlines(symbol, interval, limit)
+    : (await binanceGet(`/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`, 8000, 'spot')) as any[];
+  const out: CandleData[] = [];
+  for (const k of raw) { const c = parseBinanceKline(k, interval as any, 10); if (c) out.push(c); }
+  return out;
+}
+
+async function pool<T>(items: T[], n: number, worker: (x: T) => Promise<void>) {
+  let i = 0;
+  await Promise.all(Array.from({ length: n }, async () => { while (i < items.length) await worker(items[i++]); }));
+}
+
+const alertAi = (s: AiEngineSignal, kind: 'entry' | 'exit'): string => {
+  const tag = s.market === 'futures' ? 'FUTUROS' : 'SPOT';
+  if (kind === 'entry') {
+    return [
+      `🤖 *[IA · ${tag}] ${s.direction === 'LONG' ? 'COMPRAR' : 'VENDER (short)'}* ${s.symbol}`,
+      `Confiança ${s.aiEngine.confidence}/100. ${s.aiEngine.thesis}`,
+      `Entrada: ${fmtP(s.entryPrice)}  ·  Stop: ${fmtP(s.stopLossPrice)}  ·  Alvo: ${fmtP(s.targetPrice)}  (${s.riskRewardRatio})`,
+      '', '_Decisão automática de IA, em validação: só simulação. Não é recomendação de investimento._'
+    ].join('\n');
+  }
+  const why = s.status === 'TARGET_HIT' ? 'alvo atingido' : s.status === 'STOP_HIT' ? 'stop atingido' : 'prazo vencido';
+  return [`🔔 *[IA · ${tag}] ENCERRADO* ${s.symbol}`, `Motivo: ${why}${s.closePrice !== undefined ? ` em ${fmtP(s.closePrice)}` : ''}.`, '', '_Não é recomendação de investimento._'].join('\n');
+};
+
 /**
- * Executa a varredura ativa do MOTOR DE IA.
- * A IA seleciona os ativos mais promissores, calcula o stop/alvo e emite os sinais.
+ * Acompanha os sinais abertos da IA com velas de 1h (máxima e mínima), como nos outros motores.
+ * Roda ao fim de cada decisão e a cada 15 minutos (sem chamar a IA).
+ */
+export async function refreshAiOutcomes(market: MarketType): Promise<void> {
+  const state = aiEngineStates[market];
+  const open = state.signals.filter((s) => s.status === 'OPEN');
+  if (open.length === 0) return;
+  const now = Date.now();
+  const candles = new Map<string, HourCandle[]>();
+  await pool([...new Set(open.map((s) => s.symbol))], 3, async (sym) => {
+    try { candles.set(sym, (await klinesFor(market, sym, '1h', 200)).map((c) => ({ timestamp: c.timestamp, high: c.high, low: c.low, close: c.close }))); } catch { /* tenta no próximo ciclo */ }
+  });
+  const alerts: string[] = [];
+  for (const s of open) {
+    const c = candles.get(s.symbol);
+    if (!c) continue;
+    const r = resolveOutcome(s, c, now);
+    if (!r) continue;
+    s.status = r.status; s.closePrice = r.closePrice; s.closedAt = r.closedAt;
+    if (!s.alerted) { alerts.push(alertAi(s, 'exit')); s.alerted = true; }
+  }
+  if (alerts.length) { persist(market); for (const a of alerts) await sendTelegram(a); }
+}
+
+function persist(market: MarketType) {
+  const state = aiEngineStates[market];
+  void setStateSafe(`ai-engine-${market}`, {
+    market, lastScanAt: state.lastScanAt, marketRegime: state.marketRegime, marketSummary: state.marketSummary,
+    bitcoinBullish: state.bitcoinBullish ?? null, blocked: state.blocked ?? [], signals: state.signals
+  });
+}
+
+/** Acompanhamento automático dos sinais abertos (15 min). Desligue com AI_ENGINE_TRACK=false. */
+export function startAiEngineTracker(intervalMinutes = 15) {
+  if (process.env.AI_ENGINE_TRACK === 'false') return;
+  setTimeout(() => {
+    const tick = () => { for (const m of ['spot', 'futures'] as const) void refreshAiOutcomes(m).catch(() => {}); };
+    tick();
+    setInterval(tick, intervalMinutes * 60e3);
+  }, 120000);
+}
+
+/**
+ * Executa a varredura ativa do MOTOR DE IA. A IA recebe o mercado (Bitcoin vs média de 200 dias) e os indicadores de cada
+ * moeda (velas de 4h) e decide; as travas de src/services/aiGuards.ts aprovam só o que respeita os limites de risco.
  */
 export async function runAiEngineScan(market: MarketType = 'spot'): Promise<AiEngineState> {
   const state = aiEngineStates[market];
@@ -174,14 +269,12 @@ export async function runAiEngineScan(market: MarketType = 'spot'): Promise<AiEn
 
   state.running = true;
   state.lastError = null;
-  const startedAt = Date.now();
 
   try {
-    // 1. Obter moedas e dados do scanner
+    // 1. Moedas e cotações atuais
     const scanState = getScanState(market);
     const coins = (scanState.universe?.coins || []).slice(0, 30);
-    
-    // Obter cotações atuais
+
     let priceMap = new Map<string, number>();
     if (market === 'futures') {
       priceMap = await futuresPrices(coins.map((c) => c.symbol));
@@ -190,133 +283,99 @@ export async function runAiEngineScan(market: MarketType = 'spot'): Promise<AiEn
         const raw = await binanceGet('/api/v3/ticker/price', 6000, 'spot') as any[];
         priceMap = new Map<string, number>(raw.map((p) => [p.symbol, parseFloat(p.price)]));
       } catch {
-        // Fallback usando sinais existentes
         scanState.signals.forEach((s) => priceMap.set(s.symbol, s.entryPrice));
       }
     }
+    const top = coins.slice(0, 15).filter((c) => (priceMap.get(c.symbol) ?? 0) > 0);
+    if (top.length === 0) throw new Error('Não foi possível obter cotações para alimentar o Motor de IA.');
 
-    // Moedas candidatas com dados reais
-    const candidatesData = coins.slice(0, 15).map((c) => {
-      const px = priceMap.get(c.symbol);
-      const existingSig = scanState.signals.find((s) => s.symbol === c.symbol);
-      return {
-        symbol: c.symbol,
-        baseAsset: c.baseAsset,
-        price: px || existingSig?.entryPrice || 0,
-        existingSignal: existingSig ? {
-          direction: existingSig.direction,
-          strategy: existingSig.strategyName,
-          score: existingSig.score,
-          indicators: existingSig.indicatorsTriggered
-        } : null
-      };
-    }).filter((c) => c.price > 0);
+    // 2. Mercado: Bitcoin (spot, diário) acima ou abaixo da média de 200 dias
+    const btcDaily = await klinesFor('spot', 'BTCUSDT', '1d', 320);
+    const mkt = marketTrend(splitClosed(btcDaily, Date.now()).closed);
+    if (!mkt) throw new Error('Histórico do Bitcoin insuficiente para ler o mercado.');
+    state.bitcoinBullish = mkt.bullish;
 
-    if (candidatesData.length === 0) {
-      throw new Error('Não foi possível obter cotações para alimentar o Motor de IA.');
-    }
+    // 3. Indicadores de cada moeda (velas fechadas de 4h)
+    const rows: (AiRow & { regraExistente: any })[] = [];
+    await pool(top, 3, async (c) => {
+      try {
+        const now = Date.now();
+        const closed = (await klinesFor(market, c.symbol, '4h', 300)).filter((k) => k.timestamp + H4 <= now);
+        const row = computeRow(c.symbol, closed);
+        if (!row) return;
+        const ex = scanState.signals.find((x) => x.symbol === c.symbol && x.status === 'OPEN');
+        rows.push({ ...row, close: priceMap.get(c.symbol) ?? row.close, regraExistente: ex ? { direcao: ex.direction, estrategia: ex.strategyName, pontuacao: ex.score } : null });
+      } catch { /* moeda sem velas nesta rodada */ }
+    });
+    if (rows.length < 3) throw new Error('Poucas moedas com histórico suficiente para a IA analisar.');
 
-    const prompt = `Você é o MOTOR DE INTELIGÊNCIA ARTIFICIAL de trading de criptomoedas (mercado: ${market.toUpperCase()}).
-Você é o motor decisório responsável por analisar o mercado e emitir sinais rigorosos de compra (LONG) ou venda (SHORT).
+    const ctx = {
+      mercado: market === 'futures' ? 'Criptomoedas, futuros perpétuos' : 'Criptomoedas, spot',
+      bitcoin_acima_da_media_200d: mkt.bullish, leitura_do_mercado: mkt.label,
+      bitcoin_vs_media_200d_pct: Math.round((mkt.close / mkt.sma200 - 1) * 1000) / 10,
+      bitcoin_variacao_20_dias_pct: Math.round(mkt.change20dPct * 10) / 10
+    };
+    const R = AI_CRYPTO_RULES;
+    const prompt = `Você é o MOTOR DE DECISÃO de um sistema de trading de criptomoedas (${ctx.mercado}). Decida com base SOMENTE nos números abaixo (mercado e indicadores em velas de 4h), sem notícias nem previsão de preço.
 
-Dados atuais de mercado:
-${JSON.stringify(candidatesData, null, 2)}
+MERCADO:
+${JSON.stringify(ctx)}
 
-SUA TAREFA:
-1. Avalie a estrutura de mercado como um todo (marketSummary e marketRegime).
-2. Selecione de 2 a 5 ativos com a melhor confluência técnica e emita o sinal do Motor de IA para cada um.
-3. Para cada ativo, determine com rigor:
-   - direction: "LONG" (compra) ou "SHORT" (venda)
-   - confidence: probabilidade estimada de acerto (entre 70 e 96)
-   - entryPrice: preço de entrada próximo ao preço atual
-   - targetPrice: alvo de lucro (para LONG > entrada; para SHORT < entrada) com risco:retorno de pelo menos 1.5 a 3.0
-   - stopLossPrice: stop loss de proteção técnica (para LONG < entrada; para SHORT > entrada)
-   - thesis: justificativa analítica direta (máx 3 frases) em português do Brasil explicando a lógica de entrada e por que a assimetria é vantajosa.
-   - riskLevel: "BAIXO", "MEDIO" ou "ALTO"
-   - strategy: "AI_ENGINE_MOMENTUM" ou "AI_ENGINE_BREAKOUT" ou "AI_ENGINE_REVERSAL"
+INDICADORES POR MOEDA (ret5/ret20/ret60 = variação % em 5/20/60 velas de 4h; rsi = RSI(14); macdHistPct = histograma do MACD em % do preço; emaGapAtr = (EMA20-EMA50) em ATR; sma200GapPct = distância da média de 200 velas; atrPct = ATR em % do preço; volRatio = volume/média de 20; dist55HighPct = quanto falta (+) ou já passou (−) da máxima de 55 velas; dist20LowPct = distância da mínima de 20 velas; ruleScore = pontuação do motor de regras; regraExistente = sinal aberto do motor de regras, se houver):
+${JSON.stringify(rows)}
 
-Responda ESTRITAMENTE em formato JSON com o seguinte schema:
-{
-  "marketRegime": "string curto (ex: ALTA SELETIVA, CONSOLIDAÇÃO, TENDÊNCIA DE BAIXA)",
-  "marketSummary": "string de 1 a 2 frases com a leitura macro do motor",
-  "signals": [
-    {
-      "symbol": "BTCUSDT",
-      "baseAsset": "BTC",
-      "direction": "LONG",
-      "confidence": 88,
-      "timeframe": "4h",
-      "entryPrice": 68500.0,
-      "targetPrice": 71900.0,
-      "stopLossPrice": 67100.0,
-      "thesis": "Tese analítica clara...",
-      "riskLevel": "MEDIO",
-      "strategy": "AI_ENGINE_MOMENTUM"
-    }
-  ]
-}`;
+REGRAS (o sistema descarta o que passar delas): ${market === 'spot' ? 'só LONG (compra)' : 'LONG só com o Bitcoin acima da média de 200 dias e SHORT só com ele abaixo'}; confiança mínima ${R.minConfidence}; no máximo ${R.maxNew} sinais; stop de ${R.stopPct[0]}% a ${R.stopPct[1]}% do preço; alvo de ${R.minRewardRisk}x a ${R.maxRewardRisk}x a distância do stop; use preços próximos ao atual. O padrão é NÃO operar: devolva lista vazia se nada justificar. Confiança = sua estimativa de que o alvo vem antes do stop.
 
+Responda ESTRITAMENTE em JSON:
+{"marketRegime":"texto curto","marketSummary":"1 a 2 frases","signals":[{"symbol":"BTCUSDT","baseAsset":"BTC","direction":"LONG","confidence":75,"timeframe":"4h","entryPrice":0,"targetPrice":0,"stopLossPrice":0,"thesis":"até 3 frases em português citando os indicadores","riskLevel":"BAIXO|MEDIO|ALTO","strategy":"AI_ENGINE_MOMENTUM|AI_ENGINE_BREAKOUT|AI_ENGINE_REVERSAL"}]}`;
+
+    if (!takeBudget()) throw new Error('Limite diário de chamadas à IA atingido');
     const jsonText = await callGeminiEngine(prompt);
-    const parsed = JSON.parse(jsonText);
+    let parsed: any;
+    try { parsed = JSON.parse(jsonText.replace(/^\s*```(?:json)?/i, '').replace(/```\s*$/i, '').trim()); } catch { throw new Error('A IA respondeu fora do formato esperado'); }
 
-    state.marketRegime = parsed.marketRegime || 'CONFLUÊNCIA DE IA';
-    state.marketSummary = parsed.marketSummary || 'Motor de IA atualizado com leitura do fluxo.';
+    state.marketRegime = String(parsed?.marketRegime || (mkt.bullish ? 'MERCADO EM ALTA' : 'MERCADO EM BAIXA')).slice(0, 60);
+    state.marketSummary = String(parsed?.marketSummary || 'Motor de IA atualizado com a leitura do mercado.').slice(0, 300);
 
-    const rawSignals = Array.isArray(parsed.signals) ? parsed.signals : [];
+    // 4. Travas do código
     const now = Date.now();
+    const rawSignals: any[] = Array.isArray(parsed?.signals) ? parsed.signals : [];
+    const openKeys = new Set(state.signals.filter((s) => s.status === 'OPEN').map((s) => `${s.symbol}|${s.direction}`));
+    const { approved, blocked } = guardSignals(rawSignals, {
+      market, prices: priceMap, allowed: new Set(rows.map((r) => r.symbol)), bullish: mkt.bullish, openKeys
+    });
+    state.blocked = blocked;
 
-    const formattedSignals: AiEngineSignal[] = rawSignals.map((s: any, idx: number) => {
-      const entry = Number(s.entryPrice) || priceMap.get(s.symbol) || 1;
-      const target = Number(s.targetPrice) || (s.direction === 'LONG' ? entry * 1.05 : entry * 0.95);
-      const stop = Number(s.stopLossPrice) || (s.direction === 'LONG' ? entry * 0.97 : entry * 1.03);
-      const diffTarget = Math.abs(target - entry);
-      const diffStop = Math.abs(entry - stop) || 0.0001;
+    const created: AiEngineSignal[] = approved.map((a, idx) => {
+      const s = a.raw;
+      const diffTarget = Math.abs(a.target - a.entry);
+      const diffStop = Math.abs(a.entry - a.stop);
       const rr = (diffTarget / diffStop).toFixed(1);
-
+      const strategy: AiEngineSignal['strategy'] = s.strategy === 'AI_ENGINE_BREAKOUT' || s.strategy === 'AI_ENGINE_REVERSAL' ? s.strategy : 'AI_ENGINE_MOMENTUM';
+      const thesis = String(s.thesis || 'Confluência de tendência e risco/retorno favorável detectada pelo modelo.').slice(0, 400);
+      const level = s.riskLevel === 'BAIXO' || s.riskLevel === 'ALTO' ? s.riskLevel : 'MEDIO';
       return {
-        id: `${s.symbol}-ai-${market}-${now}-${idx}`,
-        market,
-        symbol: String(s.symbol).toUpperCase(),
-        baseAsset: String(s.baseAsset || s.symbol.replace('USDT', '')).toUpperCase(),
-        direction: s.direction === 'SHORT' ? 'SHORT' : 'LONG',
-        strategy: s.strategy || 'AI_ENGINE_MOMENTUM',
-        strategyName: s.strategy === 'AI_ENGINE_BREAKOUT' ? 'Motor IA: Rompimento' : s.strategy === 'AI_ENGINE_REVERSAL' ? 'Motor IA: Reversão' : 'Motor IA: Momentum',
-        timeframe: s.timeframe || '4h',
-        entryPrice: entry,
-        targetPrice: target,
-        stopLossPrice: stop,
-        riskRewardRatio: `1:${rr}`,
-        status: 'OPEN',
-        technicalReason: s.thesis || 'Sinal estruturado e validado pelo Motor de Inteligência Artificial Gemini.',
-        indicatorsTriggered: ['Motor IA Gemini', `Confiança ${s.confidence || 85}%`, `R:R 1:${rr}`],
-        timestamp: 'há poucos segundos',
-        createdAt: now,
-        isDemo: false,
-        isAiGenerated: true,
-        disclaimer: 'Sinal gerado pelo Motor de Inteligência Artificial Gemini.',
-        aiEngine: {
-          isAiGenerated: true,
-          confidence: Math.min(99, Math.max(50, Number(s.confidence) || 85)),
-          verdict: s.direction === 'SHORT' ? 'SHORT APROVADO' : 'LONG APROVADO',
-          thesis: s.thesis || 'Confluência de tendência e risco/retorno favorável detectada pelo modelo.',
-          riskLevel: s.riskLevel || 'MEDIO',
-          analyzedAt: now
-        }
+        id: `${a.symbol}-ai-${market}-${now}-${idx}`,
+        market, symbol: a.symbol,
+        baseAsset: String(s.baseAsset || a.symbol.replace('USDT', '')).toUpperCase(),
+        direction: a.direction, strategy,
+        strategyName: strategy === 'AI_ENGINE_BREAKOUT' ? 'Motor IA: Rompimento' : strategy === 'AI_ENGINE_REVERSAL' ? 'Motor IA: Reversão' : 'Motor IA: Momentum',
+        timeframe: '4h', entryPrice: a.entry, targetPrice: a.target, stopLossPrice: a.stop, riskRewardRatio: `1:${rr}`,
+        status: 'OPEN', technicalReason: thesis,
+        indicatorsTriggered: ['Motor IA', `Confiança ${a.confidence}%`, `R:R 1:${rr}`],
+        timestamp: 'agora', createdAt: now, isDemo: false, isAiGenerated: true,
+        disclaimer: 'Sinal decidido por IA a partir do mercado e dos indicadores, dentro de travas de risco. Em validação: só simulação.',
+        aiEngine: { isAiGenerated: true, confidence: a.confidence, verdict: a.direction === 'SHORT' ? 'SHORT APROVADO' : 'LONG APROVADO', thesis, riskLevel: level, analyzedAt: now }
       };
     });
 
-    state.signals = formattedSignals;
+    // 5. O histórico é mantido (antes cada rodada apagava o anterior), para medir o resultado ao vivo
+    state.signals = [...created, ...state.signals].slice(0, 200);
     state.lastScanAt = now;
-
-    // Persiste no armazenamento
-    void setStateSafe(`ai-engine-${market}`, {
-      market,
-      lastScanAt: now,
-      marketRegime: state.marketRegime,
-      marketSummary: state.marketSummary,
-      signals: state.signals
-    });
-
+    persist(market);
+    for (const s of created) await sendTelegram(alertAi(s, 'entry'));
+    await refreshAiOutcomes(market);
+    persist(market);
   } catch (err: any) {
     state.lastError = err?.message || 'Falha ao executar Motor de IA';
     console.error('Erro no runAiEngineScan:', err);
@@ -324,7 +383,7 @@ Responda ESTRITAMENTE em formato JSON com o seguinte schema:
     state.running = false;
   }
 
-  return state;
+  return getAiEngineState(market);
 }
 
 /**
