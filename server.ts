@@ -12,6 +12,7 @@ import { getLabJob, startLabJob } from './server/b3LabJob';
 import { aiConfig } from './server/aiAnalyst';
 import { getAiEngineState, runAiEngineScan, evaluateSignalWithAiEngine, loadAiEngineState, startAiEngineTracker } from './server/aiEngine';
 import { getAiSwingState, runAiSwing, loadAiSwing, startAiSwing } from './server/aiSwing';
+import { getRobot, runRobot, loadRobot, startRobot, updateRobotConfig, resetRobot } from './server/robot';
 import { getB3State, runB3Scan, startB3Scanner, ensureB3Scan, loadB3State } from './server/b3Scanner';
 import { getTrendState, runTrendScan, startTrendScanner, ensureTrendScan, loadTrendState } from './server/trendScanner';
 import { futuresKlines, futuresPrices, getFuturesProvider } from './server/futuresData';
@@ -397,6 +398,30 @@ const aiGuard = (req: Request, res: Response): boolean => {
   return true;
 };
 /**
+ * Robô simulado (cripto spot): opera sozinho numa carteira própria, seguindo os sinais de tendência e do motor de IA.
+ *  GET  /api/robot            estado, posições, operações e estatísticas
+ *  POST /api/robot/config     {enabled, useTrend, useAi, riskPct, maxOpen, maxPositionPct, maxDailyLossPct, maxDrawdownPct, maxSignalAgeH, resume}
+ *  POST /api/robot/run        roda um ciclo agora
+ *  POST /api/robot/reset      {startCapital} zera a carteira do robô (fica desligado)
+ */
+app.get('/api/robot', (_req: Request, res: Response) => { res.json(getRobot()); });
+app.post('/api/robot/config', (req: Request, res: Response) => {
+  if (!aiGuard(req, res)) return;
+  updateRobotConfig(req.body);
+  res.json(getRobot());
+});
+app.post('/api/robot/run', async (req: Request, res: Response) => {
+  if (!aiGuard(req, res)) return;
+  const r = await runRobot();
+  res.status(r.ok ? 200 : 502).json({ ...r, ...getRobot() });
+});
+app.post('/api/robot/reset', (req: Request, res: Response) => {
+  if (!aiGuard(req, res)) return;
+  resetRobot(req.body?.startCapital);
+  res.json(getRobot());
+});
+
+/**
  *  GET  /api/ai/swing        motor de IA da B3: sinais, decisões da última rodada e mercado
  *  POST /api/ai/swing/run    pede uma rodada de decisões agora
  */
@@ -520,13 +545,14 @@ async function startServer() {
   }
 
   // Restaura o último resultado antes de aceitar pedidos: o servidor responde com dados desde o primeiro acesso
-  await Promise.all([loadScanners(), loadTrendState(), loadB3State(), loadAiEngineState(), loadAiSwing()]);
+  await Promise.all([loadScanners(), loadTrendState(), loadB3State(), loadAiEngineState(), loadAiSwing(), loadRobot()]);
 
   if (process.env.SCANNER_ENABLED !== 'false') {
     startScanner(Number(process.env.SCAN_INTERVAL_MINUTES) || 5);
     startTrendScanner();
     startB3Scanner();
     startAiSwing();
+    startRobot();
     startAiEngineTracker();
   }
 

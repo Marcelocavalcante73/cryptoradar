@@ -1,7 +1,7 @@
 import React from 'react';
-import { Radio, Wallet, TrendingUp, Activity, ListChecks, Cpu } from 'lucide-react';
+import { Radio, Wallet, TrendingUp, Activity, ListChecks, Cpu, Bot } from 'lucide-react';
 
-export type ScreenTab = 'signals' | 'wallet' | 'market' | 'settings' | 'details' | 'backtest' | 'trend' | 'b3signals' | 'b3trend' | 'b3track' | 'b3ai';
+export type ScreenTab = 'signals' | 'wallet' | 'market' | 'settings' | 'details' | 'backtest' | 'trend' | 'b3signals' | 'b3trend' | 'b3track' | 'b3ai' | 'robot';
 export type AppSection = 'spot' | 'futures' | 'b3' | 'crypto';
 
 interface BottomNavProps {
@@ -39,13 +39,14 @@ export const BottomNav: React.FC<BottomNavProps> = ({
   ] : [
     { id: 'signals' as ScreenTab, label: 'Sinais', icon: Radio, count: openSignals },
     { id: 'trend' as ScreenTab, label: 'Tendência', icon: Activity, count: openTrend },
+    { id: 'robot' as ScreenTab, label: 'Robô', icon: Bot, count: 0 },
     { id: 'wallet' as ScreenTab, label: 'Posições', icon: Wallet, count: openPositions },
     { id: 'market' as ScreenTab, label: 'Mercado', icon: TrendingUp, count: 0 }
   ];
 
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-40 bg-[#0F172A]/95 backdrop-blur-md border-t border-[#1E293B] safe-area-pb">
-      <div className={`max-w-2xl mx-auto grid ${items.length === 3 ? 'grid-cols-3' : 'grid-cols-4'}`}>
+      <div className={`max-w-2xl mx-auto grid ${items.length === 3 ? 'grid-cols-3' : items.length === 5 ? 'grid-cols-5' : 'grid-cols-4'}`}>
         {items.map((item) => {
           const Icon = item.icon;
           const active = activeTab === item.id || (item.id === 'market' && activeTab === 'details');

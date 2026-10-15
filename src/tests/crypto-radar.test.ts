@@ -51,6 +51,7 @@ process.env.UNIVERSE_CACHE = 'off';
 process.env.RETRY_BASE_MS = '1';
 process.env.B3_PERSIST = 'off';
 process.env.AI_PERSIST = 'off';
+process.env.ROBOT_PERSIST = 'off';
 const buildUniverse = (m?: 'spot' | 'futures') => { resetTop100Cache(); return buildUniverseRaw(m); };
 import { formatTelegramAlert } from '../../server/scanner';
 import { computeSignalPerformance, signalResultR, evaluateReadiness, PerfSignal } from '../services/signalPerformance';
@@ -63,6 +64,8 @@ import { detectTrendEntry, updateTrendSignal, canEnter, splitClosed, trendSignal
 import { runTrendBacktest, btcRegimeByDay, TREND_RULES } from '../services/trendBacktest';
 import { marketTrend, detectIndicatorEntry, updateIndicatorSignal, indicatorSignalResult, evaluateB3Readiness, b3Sizing, B3Signal } from '../services/b3Signals';
 import { aiConfig, generateText, resetAiState, takeBudget } from '../../server/aiAnalyst';
+import { newRobotState, robotStep, robotStats, robotEquity, sanitizeConfig, DEFAULT_ROBOT_CONFIG, ROBOT_COST, SourceSignal } from '../services/robot';
+import { runRobot, getRobot, resetRobotState, updateRobotConfig, resetRobot } from '../../server/robot';
 import { guardSignals, resolveOutcome, liveStats } from '../services/aiGuards';
 import { runAiEngineScan, getAiEngineState, resetAiEngineStates, refreshAiOutcomes } from '../../server/aiEngine';
 import { scanners } from '../../server/scanner';
@@ -2305,6 +2308,113 @@ console.log('\n--- Motor de IA das criptos ---');
   for (const [k, v] of [['GEMINI_API_KEY', saved.g], ['OPENAI_API_KEY', saved.o], ['AI_PROVIDER', saved.p]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   resetAiEngineStates(); resetAiState();
   (scanners.spot.state as any).universe = null;
+}
+
+
+// ============================================================================
+// ROBÔ SIMULADO (CRIPTO SPOT)
+// ============================================================================
+console.log('\n--- Robô simulado ---');
+{
+  const H = 3600e3;
+  const T = 1_800_000_000_000;
+  const on = (o: any = {}) => newRobotState({ ...DEFAULT_ROBOT_CONFIG, enabled: true, ...o }, T);
+  const sg = (id: string, sym: string, o: Partial<SourceSignal> = {}): SourceSignal => ({ id, source: 'trend', symbol: sym + 'USDT', baseAsset: sym, state: 'OPEN', entryPrice: 100, stopPrice: 95, createdAt: T - H, ...o });
+  const px = (m: Record<string, number>) => new Map(Object.entries(m).map(([k, v]) => [k + 'USDT', v]));
+
+  // Tamanho pelo risco: 1% de 1000 = 10 USDT de risco; stop a ~5,15% (com custos) => posição ~194 USDT
+  const r1 = robotStep(on(), [sg('a', 'AAA')], px({ AAA: 100 }), T);
+  const p = r1.state.positions[0];
+  assert(r1.state.positions.length === 1 && Math.abs(p.riskUsd - 10) < 0.01, 'Robô: o tamanho da posição arrisca exatamente o risco configurado (1% do patrimônio)', JSON.stringify(p));
+  assert(Math.abs(p.entryPrice - 100 * (1 + ROBOT_COST)) < 1e-9 && Math.abs(robotEquity(r1.state) - (1000 - p.qty * p.entryPrice + p.qty * 100)) < 1e-9, 'Robô: a compra paga taxa e derrapagem e o patrimônio reflete o custo');
+  assert(r1.events.some((e) => e.kind === 'entry'), 'Robô: a compra fica registrada');
+
+  // Desligado: não compra
+  assert(robotStep(newRobotState({ ...DEFAULT_ROBOT_CONFIG, enabled: false }, T), [sg('a', 'AAA')], px({ AAA: 100 }), T).state.positions.length === 0, 'Robô: desligado não abre posição');
+  // Fontes
+  assert(robotStep(on({ useTrend: false }), [sg('a', 'AAA')], px({ AAA: 100 }), T).state.positions.length === 0 && robotStep(on({ useAi: false }), [sg('a', 'AAA', { source: 'ai' })], px({ AAA: 100 }), T).state.positions.length === 0, 'Robô: só segue as fontes ligadas (tendência e IA)');
+  // Sinal velho, sem entrada, ou já passado
+  assert(robotStep(on(), [sg('a', 'AAA', { createdAt: T - 30 * H })], px({ AAA: 100 }), T).state.positions.length === 0, 'Robô: ignora sinal mais velho que o limite (24h)');
+  assert(robotStep(on(), [sg('a', 'AAA', { entryPrice: undefined })], px({ AAA: 100 }), T).state.positions.length === 0, 'Robô: espera o sinal ter preço de entrada');
+  const chase = robotStep(on(), [sg('a', 'AAA')], px({ AAA: 103 }), T);
+  assert(chase.state.positions.length === 0 && chase.events.some((e) => /1,5%/.test(e.text)) && chase.state.takenSignalIds.includes('a'), 'Robô: não persegue preço que já subiu mais de 1,5% e não reavalia o sinal');
+  assert(robotStep(on(), [sg('a', 'AAA')], px({ AAA: 94 }), T).state.positions.length === 0, 'Robô: não compra se o preço já está no stop');
+  assert(robotStep(on(), [sg('a', 'AAA')], new Map(), T).state.positions.length === 0, 'Robô: sem preço, não compra');
+
+  // Limites: posição máxima em % do patrimônio e posições abertas
+  const tight = robotStep(on({ riskPct: 3, maxPositionPct: 10 }), [sg('a', 'AAA', { stopPrice: 99 })], px({ AAA: 100 }), T);
+  assert(Math.abs(tight.state.positions[0].qty * tight.state.positions[0].entryPrice - 100) < 0.01, 'Robô: stop apertado não infla a posição além de 10% do patrimônio', String(tight.state.positions[0]?.qty));
+  const many = robotStep(on({ maxOpen: 2 }), ['A', 'B', 'C', 'D'].map((x, i) => sg(x.toLowerCase(), x, { createdAt: T - (i + 1) * H })), px({ A: 100, B: 100, C: 100, D: 100 }), T);
+  assert(many.state.positions.length === 2, 'Robô: respeita o máximo de posições abertas');
+  const dup = robotStep(r1.state, [sg('a', 'AAA'), sg('a2', 'AAA')], px({ AAA: 100 }), T + H);
+  assert(dup.state.positions.length === 1, 'Robô: não abre duas posições no mesmo ativo');
+  const again = robotStep(r1.state, [sg('a', 'AAA')], px({ AAA: 100 }), T + H);
+  assert(again.state.positions.length === 1 && again.state.takenSignalIds.length === 1, 'Robô: o mesmo sinal não é comprado duas vezes');
+
+  // Saídas
+  const stopped = robotStep(r1.state, [sg('a', 'AAA')], px({ AAA: 94 }), T + 2 * H);
+  assert(stopped.state.positions.length === 0 && stopped.state.trades[0].reason === 'stop atingido' && stopped.state.trades[0].pnl < 0, 'Robô: stop atingido encerra a posição com perda');
+  const lossPct = (1000 - robotEquity(stopped.state)) / 1000 * 100;
+  assert(lossPct > 0.9 && lossPct < 1.4, 'Robô: perder no stop custa cerca do risco configurado (1%) mais custos', lossPct.toFixed(2));
+  const done = robotStep(r1.state, [sg('a', 'AAA', { state: 'DONE', exitPrice: 110 })], px({ AAA: 108 }), T + 2 * H);
+  assert(done.state.trades[0].exitPrice === 110 * (1 - ROBOT_COST) && done.state.trades[0].pnl > 0 && /estratégia encerrou/.test(done.state.trades[0].reason), 'Robô: segue a saída da estratégia pelo preço dela, com custos');
+  const exitNow = robotStep(r1.state, [sg('a', 'AAA', { state: 'EXIT_NOW' })], px({ AAA: 104 }), T + 2 * H);
+  assert(exitNow.state.trades[0].reason === 'a estratégia mandou sair', 'Robô: sinal de saída da tendência fecha a posição ao preço atual');
+  const tgt = robotStep(on(), [sg('t', 'TTT', { source: 'ai', targetPrice: 110 })], px({ TTT: 100 }), T);
+  assert(robotStep(tgt.state, [sg('t', 'TTT', { source: 'ai', targetPrice: 110 })], px({ TTT: 111 }), T + H).state.trades[0].reason === 'alvo atingido', 'Robô: alvo da IA fecha a posição');
+  const off = robotStep({ ...r1.state, config: { ...r1.state.config, enabled: false } }, [sg('a', 'AAA')], px({ AAA: 94 }), T + 2 * H);
+  assert(off.state.positions.length === 0, 'Robô: desligado ainda encerra posições abertas (stop)');
+
+  // Perda máxima no dia pausa novas entradas e volta no dia seguinte
+  let st = r1.state;
+  st = robotStep(st, [sg('a', 'AAA')], px({ AAA: 100 }), T + H).state;
+  st = robotStep({ ...st, config: { ...st.config, riskPct: 3, maxDailyLossPct: 1 } }, [sg('a', 'AAA')], px({ AAA: 50 }), T + 2 * H).state;
+  assert(st.pausedDay !== null && st.positions.length === 0, 'Robô: perda do dia acima do limite pausa o dia');
+  const blocked = robotStep(st, [sg('z', 'ZZZ')], px({ ZZZ: 100 }), T + 3 * H);
+  assert(blocked.state.positions.length === 0, 'Robô: pausado no dia, ignora novos sinais');
+  const nextDay = robotStep(st, [sg('z', 'ZZZ', { createdAt: T + 24 * H })], px({ ZZZ: 100 }), T + 26 * H);
+  assert(nextDay.state.positions.length === 1, 'Robô: no dia seguinte volta a operar');
+
+  // Queda máxima do pico PARA o robô até religar manualmente
+  const dd = robotStep({ ...on({ maxDrawdownPct: 3, maxDailyLossPct: 20 }), cash: 900, peakEquity: 1000 }, [sg('z', 'ZZZ')], px({ ZZZ: 100 }), T);
+  assert(dd.state.halted !== null && dd.state.positions.length === 0 && dd.events.some((e) => e.kind === 'risk'), 'Robô: queda máxima desde o pico para o robô e avisa');
+  const stillHalted = robotStep(dd.state, [sg('z', 'ZZZ')], px({ ZZZ: 100 }), T + 48 * H);
+  assert(stillHalted.state.halted !== null && stillHalted.state.positions.length === 0, 'Robô: parado continua parado nos dias seguintes');
+
+  // Estatística e configuração
+  const stats = robotStats(done.state, T + 3 * 86400000);
+  assert(stats.closed === 1 && stats.wins === 1 && stats.pnl > 0 && stats.readiness.status === 'collecting', 'Robô: estatística conta as operações e os critérios de validação', JSON.stringify(stats.readiness.status));
+  const cfg = sanitizeConfig({ riskPct: 99, maxOpen: 0, maxPositionPct: 'x', startCapital: 5, enabled: 'sim' }, DEFAULT_ROBOT_CONFIG);
+  assert(cfg.riskPct === 3 && cfg.maxOpen === 1 && cfg.maxPositionPct === DEFAULT_ROBOT_CONFIG.maxPositionPct && cfg.startCapital === 1000 && cfg.enabled === false, 'Robô: configuração inválida é limitada (risco máx. 3%, capital só muda no reset)');
+  const prevJson = JSON.stringify(r1.state);
+  robotStep(r1.state, [sg('q', 'QQQ')], px({ QQQ: 100 }), T + H);
+  assert(JSON.stringify(r1.state) === prevJson, 'Robô: o ciclo não altera o estado recebido');
+
+  // Servidor: junta os sinais de tendência e do motor de IA, com Binance simulada
+  resetRobotState(); resetTrendState();
+  updateRobotConfig({ enabled: true });
+  getTrendState().signals.unshift({ id: 'SRV-1', symbol: 'SRVUSDT', baseAsset: 'SRV', signalDay: Date.now() - 86400000, createdAt: Date.now() - H, refPrice: 10, entryPrice: 10, stopPrice: 9.5, atr: 0.25, exitLevel: 9.4, status: 'OPEN', lastPrice: 10 } as any);
+  const realFetchR = globalThis.fetch;
+  let srvPrice = 10;
+  globalThis.fetch = ((url: any) => {
+    const u = String(url);
+    if (u.includes('/api/v3/ticker/price')) return Promise.resolve(new Response(JSON.stringify([{ symbol: 'SRVUSDT', price: String(srvPrice) }]), { status: 200 }));
+    return Promise.reject(new Error('url inesperada: ' + u));
+  }) as typeof fetch;
+  const run1 = await runRobot();
+  assert(run1.ok && getRobot().state.positions.length === 1 && getRobot().state.positions[0].symbol === 'SRVUSDT', 'Robô servidor: lê o sinal de tendência e compra', run1.message);
+  getTrendState().signals[0].status = 'STOPPED' as any; (getTrendState().signals[0] as any).exitPrice = 9.5;
+  const run2 = await runRobot();
+  assert(run2.ok && getRobot().state.positions.length === 0 && getRobot().stats.closed === 1, 'Robô servidor: acompanha o encerramento do sinal e fecha a posição');
+  globalThis.fetch = (() => Promise.reject(new Error('sem rede'))) as typeof fetch;
+  updateRobotConfig({ enabled: true, riskPct: 2 });
+  getTrendState().signals.unshift({ id: 'SRV-2', symbol: 'SRVUSDT', baseAsset: 'SRV', signalDay: Date.now(), createdAt: Date.now(), refPrice: 10, entryPrice: 10, stopPrice: 9.5, atr: 0.25, exitLevel: 9.4, status: 'OPEN' } as any);
+  const run3 = await runRobot();
+  assert(!run3.ok && getRobot().lastError !== null && getRobot().state.positions.length === 0 && getRobot().state.config.riskPct === 2, 'Robô servidor: sem preços, não compra e mostra o erro', run3.message);
+  resetRobot(5000);
+  assert(getRobot().state.config.startCapital === 5000 && getRobot().state.config.enabled === false && getRobot().state.cash === 5000 && getRobot().state.trades.length === 0, 'Robô servidor: zerar a carteira recomeça do capital novo, desligado');
+  globalThis.fetch = realFetchR;
+  resetRobotState(); resetTrendState();
 }
 
 console.log('\n========================================================');
