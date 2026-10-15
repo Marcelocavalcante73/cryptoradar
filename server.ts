@@ -10,7 +10,7 @@ import { binanceGet } from './server/universe';
 import { getBatchJob, startBatchJob } from './server/backtestJob';
 import { getLabJob, startLabJob } from './server/b3LabJob';
 import { aiConfig, aiExplain, aiSummary } from './server/aiAnalyst';
-import { getAiEngineState, runAiEngineScan, evaluateSignalWithAiEngine, loadAiEngineState } from './server/aiEngine';
+import { getAiEngineState, runAiEngineScan, evaluateSignalWithAiEngine, loadAiEngineState, startAiEngineTracker } from './server/aiEngine';
 import { getAiSwingState, runAiSwing, loadAiSwing, startAiSwing } from './server/aiSwing';
 import { getB3State, runB3Scan, startB3Scanner, ensureB3Scan, loadB3State } from './server/b3Scanner';
 import { getTrendState, runTrendScan, startTrendScanner, ensureTrendScan, loadTrendState } from './server/trendScanner';
@@ -544,6 +544,7 @@ async function startServer() {
     startTrendScanner();
     startB3Scanner();
     startAiSwing();
+    startAiEngineTracker();
   }
 
   app.listen(PORT, '0.0.0.0', () => {

@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { TechnicalSignal, PaperAccount, MarketType } from '../../types/crypto';
 import { PerformancePanel } from './PerformancePanel';
 import { AiExplain, AiSummary } from '../common/AiBox';
-import { fmtPrice, fmtUsd, timeAgo } from '../common/format';
+import { fmtPrice, fmtUsd, fmtPct, timeAgo } from '../common/format';
 import { suggestAmount } from '../paperTrading/TradeSheet';
 import { futuresSizing, maxSafeLeverage, DEFAULT_FUTURES_LEVERAGE } from '../../services/futures';
 import { TRADING_FEE_RATE } from '../../services/paperTradingService';
@@ -254,6 +254,35 @@ export const SignalsView: React.FC<SignalsViewProps> = ({
           <span className="text-indigo-400 font-medium">Tese Geral do Motor: </span>
           {aiState?.marketSummary || 'O motor avalia continuamente múltiplos pares buscando quebras de estrutura e assimetria positiva de risco/retorno.'}
         </div>
+
+        {/* Travas e resultado ao vivo: a IA decide, o código limita o risco e o resultado é medido */}
+        {aiState && (
+          <div className="mt-3 bg-[#0b0d14]/70 border border-slate-800/80 rounded-xl p-3 text-xs text-slate-300 leading-relaxed space-y-2">
+            {aiState.bitcoinBullish !== undefined && aiState.bitcoinBullish !== null && (
+              <p>
+                Bitcoin {aiState.bitcoinBullish ? 'acima' : 'abaixo'} da média de 200 dias:{' '}
+                <span className="text-slate-100">{aiState.bitcoinBullish ? 'só compras (LONG)' : spot ? 'compras bloqueadas' : 'só vendas (SHORT)'}</span>.
+                Stop de 0,5% a 15%, risco/retorno de 1:1,5 a 1:6 e confiança mínima 60 são impostos pelo código.
+              </p>
+            )}
+            {aiState.blocked && aiState.blocked.length > 0 && (
+              <p className="text-amber-300">Barrado pelas travas: {aiState.blocked.map((b) => `${b.symbol} (${b.why})`).join('; ')}.</p>
+            )}
+            {aiState.stats && (
+              <div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-100 font-medium">Resultado ao vivo da IA</span>
+                  <span className={`w-2 h-2 rounded-full ${aiState.stats.readiness.status === 'ready' ? 'bg-emerald-400' : aiState.stats.readiness.status === 'failed' ? 'bg-rose-400' : 'bg-amber-400'}`} />
+                </div>
+                <p className="text-slate-400 mt-1">
+                  {aiState.stats.closed} encerrados · {aiState.stats.open} abertos
+                  {aiState.stats.closed > 0 && <> · acerto {aiState.stats.winRate.toFixed(0)}% · média {fmtPct(aiState.stats.avgNetPct)} · fator {aiState.stats.profitFactor === null ? '∞' : aiState.stats.profitFactor.toFixed(2)}</>}
+                </p>
+                <p className="text-slate-500 mt-1">{aiState.stats.readiness.headline}</p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {isDemoData && (
