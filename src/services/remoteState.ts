@@ -38,10 +38,12 @@ const headers = (): Record<string, string> => {
   return { 'Content-Type': 'application/json', ...(k ? { 'X-Access-Key': k } : {}) };
 };
 
+import { safeReadJson } from './http';
+
 export async function fetchStorageInfo(): Promise<StorageInfo | null> {
   try {
     const r = await fetch('/api/storage', { signal: AbortSignal.timeout(6000) });
-    return r.ok ? await r.json() : null;
+    return await safeReadJson<StorageInfo | null>(r, null, '/api/storage');
   } catch {
     return null;
   }
@@ -66,7 +68,8 @@ export async function pullState(key: RemoteKey): Promise<PullResult> {
     const r = await fetch(`/api/state/${key}`, { headers: headers(), signal: AbortSignal.timeout(8000) });
     if (r.status === 401) return { kind: 'locked' };
     if (!r.ok) return { kind: 'offline' };
-    const j = await r.json();
+    const j = await safeReadJson<any>(r, null, `/api/state/${key}`);
+    if (!j) return { kind: 'offline' };
     return { kind: 'ok', value: j.value ?? null, savedAt: Number(j.savedAt) || 0 };
   } catch {
     return { kind: 'offline' };
@@ -84,7 +87,7 @@ export async function pushState(key: RemoteKey, value: unknown, savedAt: number)
   try {
     const r = await fetch(`/api/state/${key}`, { method: 'PUT', headers: headers(), body: JSON.stringify({ value, savedAt }), signal: AbortSignal.timeout(10000) });
     if (r.ok) return { kind: 'ok' };
-    const j = await r.json().catch(() => ({} as any));
+    const j = await safeReadJson<any>(r, {}, `/api/state/${key}`);
     if (r.status === 401) return { kind: 'locked' };
     if (r.status === 409) return { kind: 'conflict', value: j.value, savedAt: Number(j.savedAt) || 0 };
     if (r.status >= 500) return { kind: 'offline' };

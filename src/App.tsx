@@ -28,6 +28,7 @@ import {
   SyncQueue, SyncStatus, StorageInfo, RemoteKey, decideSync, fetchStorageInfo, pullState, verifyAccessKey, accessKey
 } from './services/remoteState';
 import { TradeSheet, TradeRequest } from './components/paperTrading/TradeSheet';
+import { readJson, safeReadJson } from './services/http';
 
 const MARKETS: MarketType[] = ['spot', 'futures'];
 
@@ -42,19 +43,30 @@ function futuresAsset(symbol: string, price: number): CryptoAsset {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<ScreenTab>(() => (localStore.get('cryptoradar_section') === 'b3' ? 'b3signals' : 'signals'));
-  const [market, setMarket] = useState<MarketType>(() => StorageService.getMarket());
+  const [section, setSection] = useState<AppSection>(() => {
+    const saved = localStore.get('cryptoradar_section');
+    if (saved === 'b3') return 'b3';
+    if (saved === 'futures') return 'futures';
+    return 'spot';
+  });
+  const [activeTab, setActiveTab] = useState<ScreenTab>(() => {
+    const savedSec = localStore.get('cryptoradar_section');
+    return savedSec === 'b3' ? 'b3signals' : 'signals';
+  });
+  const [market, setMarket] = useState<MarketType>(() => {
+    const savedSec = localStore.get('cryptoradar_section');
+    return savedSec === 'futures' ? 'futures' : 'spot';
+  });
   const [assets, setAssets] = useState<CryptoAsset[]>(INITIAL_ASSETS);
   const [futuresAssets, setFuturesAssets] = useState<CryptoAsset[]>([]);
   const [signalsBy, setSignalsBy] = useState<Record<MarketType, TechnicalSignal[]>>({ spot: INITIAL_SIGNALS, futures: [] });
   const [scanInfos, setScanInfos] = useState<Record<MarketType, ScanInfo | null>>({ spot: null, futures: null });
   const [selectedCoin, setSelectedCoin] = useState<CryptoAsset>(INITIAL_ASSETS[0]);
-  const [detailsMarket, setDetailsMarket] = useState<MarketType>('spot');
+  const [detailsMarket, setDetailsMarket] = useState<MarketType>(() => (localStore.get('cryptoradar_section') === 'futures' ? 'futures' : 'spot'));
   const [backTab, setBackTab] = useState<ScreenTab>('market');
   const [trade, setTrade] = useState<{ market: MarketType; asset: CryptoAsset; signal?: TechnicalSignal; noTarget?: boolean } | null>(null);
   const [trend, setTrend] = useState<TrendInfo | null>(null);
   const [b3, setB3] = useState<B3Info | null>(null);
-  const [section, setSection] = useState<AppSection>(() => (localStore.get('cryptoradar_section') === 'b3' ? 'b3' : 'crypto'));
 
   const [accounts, setAccounts] = useState<Record<MarketType, PaperAccount>>(() => ({
     spot: StorageService.getPaperAccount('spot'),
@@ -201,24 +213,27 @@ export default function App() {
         commitAccount('spot', evaluated);
       }
 
-      // Futuros: preços dos contratos perpétuos (via servidor) para posições abertas e sinais abertos
+      // Futuros: preços dos contratos perpétuos (via servidor) para posições abertas, sinais e mercado
       try {
         const fSymbols = new Set<string>();
         accountsRef.current.futures.positions.forEach((p) => fSymbols.add(p.symbol));
         signalsRef.current.futures.forEach((s) => s.status === 'OPEN' && fSymbols.add(s.symbol));
+        scanInfosRef.current.futures?.coins?.slice(0, 50).forEach((c) => fSymbols.add(c.symbol));
         if (fSymbols.size > 0) {
           const r = await fetch(`/api/futures/prices?symbols=${Array.from(fSymbols).slice(0, 150).join(',')}`, { signal: AbortSignal.timeout(6000) });
           if (r.ok) {
-            const { prices } = await r.json();
-            const fa = Object.entries(prices as Record<string, number>).map(([sym, px]) => futuresAsset(sym, px));
-            setFuturesAssets(fa);
-            const fEval = evaluateTriggers(accountsRef.current.futures, fa);
-            if (fEval.triggeredOrders.length > 0) {
-              if (settings.soundAlerts) {
-                const win = fEval.triggeredOrders.some((t) => t.type === 'TAKE_PROFIT' || (t.netPnl !== undefined && t.netPnl > 0));
-                win ? soundService.playSuccess() : soundService.playAlert();
+            const data = await safeReadJson<any>(r, null, '/api/futures/prices');
+            if (data?.prices) {
+              const fa = Object.entries(data.prices as Record<string, number>).map(([sym, px]) => futuresAsset(sym, px));
+              setFuturesAssets(fa);
+              const fEval = evaluateTriggers(accountsRef.current.futures, fa);
+              if (fEval.triggeredOrders.length > 0) {
+                if (settings.soundAlerts) {
+                  const win = fEval.triggeredOrders.some((t) => t.type === 'TAKE_PROFIT' || (t.netPnl !== undefined && t.netPnl > 0));
+                  win ? soundService.playSuccess() : soundService.playAlert();
+                }
+                commitAccount('futures', fEval.account);
               }
-              commitAccount('futures', fEval.account);
             }
           }
         }
@@ -254,7 +269,7 @@ export default function App() {
       try {
         const r = await fetch(`/api/signals?market=${m}&wait=1`, { signal: AbortSignal.timeout(35000) });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const j = await r.json();
+        const j = await readJson(r, `/api/signals?market=${m}`);
         if (cancelled) return false;
         setScanInfos((prev) => ({
           ...prev,
@@ -299,7 +314,7 @@ export default function App() {
       try {
         const r = await fetch('/api/trend?wait=1', { signal: AbortSignal.timeout(35000) });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const j: TrendInfo = await r.json();
+        const j: TrendInfo = await readJson(r, '/api/trend');
         if (cancelled) return;
         setTrend(j);
         running = Boolean(j.running);
@@ -322,7 +337,7 @@ export default function App() {
       try {
         const r = await fetch('/api/b3?wait=1', { signal: AbortSignal.timeout(35000) });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const j: B3Info = await r.json();
+        const j: B3Info = await readJson(r, '/api/b3');
         if (cancelled) return;
         setB3(j);
         running = Boolean(j.running);
@@ -338,11 +353,28 @@ export default function App() {
   const changeSection = (next: AppSection) => {
     setSection(next);
     localStore.set('cryptoradar_section', next);
-    goTo(next === 'b3' ? 'b3signals' : 'signals');
+    if (next === 'b3') {
+      goTo('b3signals');
+    } else if (next === 'futures') {
+      changeMarket('futures');
+      if (activeTab === 'trend' || activeTab === 'b3signals' || activeTab === 'b3trend' || activeTab === 'b3track') {
+        goTo('signals');
+      }
+    } else {
+      changeMarket('spot');
+      if (activeTab === 'b3signals' || activeTab === 'b3trend' || activeTab === 'b3track') {
+        goTo('signals');
+      }
+    }
   };
 
   const refreshB3 = async () => {
-    try { await fetch('/api/b3/scan', { method: 'POST' }); const r = await fetch('/api/b3?wait=1', { signal: AbortSignal.timeout(35000) }); setB3(await r.json()); } catch { /* tenta de novo no próximo ciclo */ }
+    try {
+      await fetch('/api/b3/scan', { method: 'POST' });
+      const r = await fetch('/api/b3?wait=1', { signal: AbortSignal.timeout(35000) });
+      const data = await safeReadJson<B3Info | null>(r, null, '/api/b3');
+      if (data) setB3(data);
+    } catch { /* tenta de novo no próximo ciclo */ }
   };
 
   const trendCount = trend?.watch?.length ?? 0;
@@ -481,37 +513,51 @@ export default function App() {
 
         <main className="flex-1 px-4 pt-4">
           {showSection && (
-            <div className="grid grid-cols-2 gap-1 bg-[#161920] border border-[#23272f] rounded-xl p-1 mb-3">
-              {(['crypto', 'b3'] as AppSection[]).map((sec) => (
-                <button
-                  key={sec}
-                  onClick={() => changeSection(sec)}
-                  className={`py-2.5 rounded-lg text-sm font-semibold ${section === sec ? 'bg-slate-100 text-slate-900' : 'text-slate-400'}`}
-                >
-                  {sec === 'crypto' ? 'Cripto' : 'B3'}
-                </button>
-              ))}
+            <div className="grid grid-cols-3 gap-1 bg-[#161920] border border-[#23272f] rounded-xl p-1 mb-3">
+              <button
+                onClick={() => changeSection('spot')}
+                className={`py-2 rounded-lg text-sm font-semibold transition-all flex items-center justify-center gap-1.5 ${
+                  section === 'spot' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <span>Spot</span>
+                {openSignalsBy('spot') > 0 && (
+                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                    section === 'spot' ? 'bg-slate-900 text-slate-100' : 'bg-[#23272f] text-slate-300'
+                  }`}>
+                    {openSignalsBy('spot')}
+                  </span>
+                )}
+              </button>
+              <button
+                onClick={() => changeSection('futures')}
+                className={`py-2 rounded-lg text-sm font-semibold transition-all flex items-center justify-center gap-1.5 ${
+                  section === 'futures' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <span>Futuros</span>
+                {openSignalsBy('futures') > 0 && (
+                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                    section === 'futures' ? 'bg-slate-900 text-slate-100' : 'bg-[#23272f] text-slate-300'
+                  }`}>
+                    {openSignalsBy('futures')}
+                  </span>
+                )}
+              </button>
+              <button
+                onClick={() => changeSection('b3')}
+                className={`py-2 rounded-lg text-sm font-semibold transition-all flex items-center justify-center gap-1.5 ${
+                  section === 'b3' ? 'bg-slate-100 text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <span>B3</span>
+              </button>
             </div>
           )}
 
           {isB3 && activeTab === 'b3signals' && <B3SignalsView info={b3} capital={settings.b3Capital ?? 0} riskPercent={settings.realRiskPercent ?? 1} />}
           {isB3 && activeTab === 'b3trend' && <B3TrendView info={b3} capital={settings.b3Capital ?? 0} riskPercent={settings.realRiskPercent ?? 1} />}
           {isB3 && activeTab === 'b3track' && <B3TrackView info={b3} onOpenBacktest={() => goTo('backtest')} />}
-
-          {showSwitch && !isB3 && (
-            <div className="grid grid-cols-2 gap-1 bg-[#161920] border border-[#23272f] rounded-xl p-1 mb-4">
-              {MARKETS.map((m) => (
-                <button
-                  key={m}
-                  onClick={() => changeMarket(m)}
-                  className={`py-2.5 rounded-lg text-sm font-medium ${market === m ? 'bg-[#2a2f3a] text-slate-100' : 'text-slate-400'}`}
-                >
-                  {m === 'spot' ? 'Spot' : 'Futuros'}
-                  {openSignalsBy(m) > 0 && <span className="ml-2 text-xs text-slate-500">{openSignalsBy(m)}</span>}
-                </button>
-              ))}
-            </div>
-          )}
 
           {!isB3 && activeTab === 'signals' && (
             <SignalsView
@@ -546,7 +592,7 @@ export default function App() {
               sync={{ status: syncStatus, info: storageInfo, blocked: localStore.isBlocked(), detail: syncDetail }}
               market={market}
               account={paperAccount}
-              assets={market === 'futures' ? futuresAssets : assets}
+              assets={market === 'futures' && futuresAssets.length > 0 ? futuresAssets : assets}
               onClosePosition={handleClosePosition}
               onResetBalance={handleResetBalance}
               onClearHistory={handleClearHistory}
@@ -555,7 +601,12 @@ export default function App() {
           )}
 
           {!isB3 && activeTab === 'market' && (
-            <MarketView assets={assets} coins={scanInfos.spot?.coins ?? []} onSelectCoin={(a) => handleSelectCoin(a, 'spot', 'market')} />
+            <MarketView
+              market={market}
+              assets={market === 'futures' && futuresAssets.length > 0 ? futuresAssets : assets}
+              coins={(market === 'futures' ? scanInfos.futures?.coins : scanInfos.spot?.coins) ?? []}
+              onSelectCoin={(a) => handleSelectCoin(a, market, 'market')}
+            />
           )}
 
           {activeTab === 'details' && (

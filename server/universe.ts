@@ -50,7 +50,9 @@ export async function fetchBybitSymbols(category: 'spot' | 'linear' = 'spot'): P
     signal: AbortSignal.timeout(10000)
   });
   if (!r.ok) throw new Error(`Bybit HTTP ${r.status}`);
-  const j: any = await r.json();
+  const text = await r.text();
+  if (!text || text.trim().startsWith('<')) throw new Error('Bybit retornou HTML');
+  const j: any = JSON.parse(text);
   if (j?.retCode !== 0 || !Array.isArray(j?.result?.list)) {
     throw new Error(`Bybit retornou resposta inválida (retCode ${j?.retCode ?? '?'})`);
   }
@@ -68,7 +70,11 @@ export async function binanceGet(path: string, timeoutMs = 8000, market: MarketT
   for (const host of BINANCE_HOSTS[market]) {
     try {
       const r = await fetch(`${host}${path}`, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(timeoutMs) });
-      if (r.ok) return await r.json();
+      if (r.ok) {
+        const text = await r.text();
+        if (!text || text.trim().startsWith('<')) throw new Error('Resposta HTML recebida da Binance');
+        return JSON.parse(text);
+      }
       lastErr = new Error(`HTTP ${r.status}`);
     } catch (e) {
       lastErr = e;
@@ -112,7 +118,11 @@ async function getJsonWithRetry(url: string, init: RequestInit, attempts = 3): P
   let lastStatus = 0;
   for (let i = 0; i < attempts; i++) {
     const r = await fetch(url, { ...init, signal: AbortSignal.timeout(15000) });
-    if (r.ok) return r.json();
+    if (r.ok) {
+      const text = await r.text();
+      if (!text || text.trim().startsWith('<')) throw new Error('Resposta HTML recebida do provedor');
+      return JSON.parse(text);
+    }
     lastStatus = r.status;
     if (r.status !== 429 && r.status < 500) break;
     const retryAfter = Number(r.headers.get('retry-after'));

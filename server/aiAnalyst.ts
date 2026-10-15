@@ -58,21 +58,57 @@ export async function generateText(system: string, user: string, timeoutMs = 250
   const cfg = aiConfig();
   if (!cfg.enabled || !cfg.provider || !cfg.model) throw new Error('IA desligada');
   if (cfg.provider === 'gemini') {
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cfg.model)}:generateContent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': process.env.GEMINI_API_KEY!.trim() },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: system }] },
-        contents: [{ role: 'user', parts: [{ text: user }] }],
-        generationConfig: { temperature: 0.3, maxOutputTokens: 1500 }
-      }),
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-    if (!r.ok) throw new Error(`Gemini HTTP ${r.status}`);
-    const j: any = await r.json();
-    const text = (j?.candidates?.[0]?.content?.parts ?? []).map((p: any) => p?.text ?? '').join('').trim();
-    if (!text) throw new Error('Gemini respondeu vazio');
-    return text;
+    const candidates = Array.from(new Set([cfg.model, 'gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.1-flash-lite', 'gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.7-flash', 'gemini-flash-latest'])).filter(Boolean);
+    let lastErr: Error | null = null;
+    for (let i = 0; i < candidates.length; i++) {
+      const modelName = candidates[i];
+      try {
+        const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': process.env.GEMINI_API_KEY!.trim() },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: system }] },
+            contents: [{ role: 'user', parts: [{ text: user }] }],
+            generationConfig: { temperature: 0.3, maxOutputTokens: 1500 }
+          }),
+          signal: AbortSignal.timeout(timeoutMs)
+        });
+        const raw = await r.text();
+        let j: any = null;
+        try {
+          j = raw ? JSON.parse(raw) : null;
+        } catch {
+          if (/^\s*<(!doctype|html)/i.test(raw)) {
+            throw new Error(`Gemini respondeu com página HTML (HTTP ${r.status})`);
+          }
+          throw new Error(`Resposta inválida do Gemini (HTTP ${r.status})`);
+        }
+        if (!r.ok) {
+          const errMsg = j?.error?.message || `Gemini HTTP ${r.status}`;
+          if ((r.status === 404 || r.status === 503 || r.status === 429) && i < candidates.length - 1) {
+            lastErr = new Error(errMsg);
+            continue;
+          }
+          throw new Error(errMsg);
+        }
+        const text = (j?.candidates?.[0]?.content?.parts ?? []).map((p: any) => p?.text ?? '').join('').trim();
+        if (!text) {
+          if (i < candidates.length - 1) {
+            lastErr = new Error('Gemini respondeu vazio');
+            continue;
+          }
+          throw new Error('Gemini respondeu vazio');
+        }
+        return text;
+      } catch (err: any) {
+        lastErr = err;
+        if (i < candidates.length - 1) {
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw lastErr || new Error('Nenhum modelo Gemini respondeu');
   }
   const r = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -83,8 +119,17 @@ export async function generateText(system: string, user: string, timeoutMs = 250
     }),
     signal: AbortSignal.timeout(timeoutMs)
   });
-  if (!r.ok) throw new Error(`OpenAI HTTP ${r.status}`);
-  const j: any = await r.json();
+  const raw = await r.text();
+  let j: any = null;
+  try {
+    j = raw ? JSON.parse(raw) : null;
+  } catch {
+    if (/^\s*<(!doctype|html)/i.test(raw)) {
+      throw new Error(`A OpenAI respondeu com página HTML (HTTP ${r.status}) em vez de JSON.`);
+    }
+    throw new Error(`Resposta inválida da OpenAI (HTTP ${r.status}).`);
+  }
+  if (!r.ok) throw new Error(j?.error?.message || `OpenAI HTTP ${r.status}`);
   const text = String(j?.choices?.[0]?.message?.content ?? '').trim();
   if (!text) throw new Error('OpenAI respondeu vazio');
   return text;
@@ -96,7 +141,11 @@ const round = (n: unknown, d = 2) => (typeof n === 'number' && Number.isFinite(n
 export function explainContext(kind: ExplainKind, id: string): { subject: string; data: any } | null {
   if (kind === 'crypto-signal') {
     for (const m of ['spot', 'futures'] as const) {
-      const s: any = getScanState(m).signals.find((x) => x.id === id);
+      let s: any = getScanState(m).signals.find((x) => x.id === id);
+      if (!s) {
+        const prefix = id.split('-').slice(0, 2).join('-');
+        s = getScanState(m).signals.find((x) => x.id.startsWith(prefix));
+      }
       if (s) return {
         subject: `Sinal de ${s.direction === 'LONG' ? 'compra' : 'venda'} em ${s.baseAsset} (${m === 'futures' ? 'futuros' : 'spot'}, ${s.timeframe})`,
         data: {

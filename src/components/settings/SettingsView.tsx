@@ -6,6 +6,7 @@ import { sendTelegramTestMessage, getTelegramServerStatus, TelegramBackendStatus
 import { ScanInfo } from '../signals/SignalsView';
 import { SyncNotice } from '../common/SyncNotice';
 import { SyncStatus, StorageInfo, accessKey } from '../../services/remoteState';
+import { readJson, safeReadJson } from '../../services/http';
 import { localStore } from '../../services/localStore';
 
 interface SettingsViewProps {
@@ -34,7 +35,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, scanInfos,
     try {
       const r = await fetch('/api/health', { signal: AbortSignal.timeout(20000) });
       if (!r.ok) throw new Error(r.status === 429 ? 'Muitas verificações seguidas. Aguarde um minuto.' : `Erro ${r.status}`);
-      setHealth(await r.json());
+      setHealth(await readJson(r, '/api/health'));
     } catch (e: any) {
       setHealth(null);
       setHealthErr(`Não foi possível falar com o servidor: ${e?.message ?? 'sem resposta'}`);
@@ -43,7 +44,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, scanInfos,
   };
 
   useEffect(() => {
-    fetch('/api/telegram/status').then((r) => r.json()).then(setTg).catch(() => setTg(null));
+    fetch('/api/telegram/status')
+      .then((r) => safeReadJson<any>(r, null, '/api/telegram/status'))
+      .then(setTg)
+      .catch(() => setTg(null));
   }, []);
 
   const setRisk = (patch: Partial<AppSettings['risk']>) => onSaveSettings({ ...settings, risk: { ...settings.risk, ...patch } });

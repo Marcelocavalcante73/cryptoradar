@@ -10,13 +10,22 @@ export class OldServerError extends Error {
   }
 }
 
-export async function readJson<T = any>(r: Response, url: string): Promise<T> {
+export async function readJson<T = any>(r: Response, url: string = ''): Promise<T> {
   const text = await r.text();
   try {
     return JSON.parse(text) as T;
   } catch {
-    if (/^\s*<(!doctype|html)/i.test(text)) throw new OldServerError(url);
+    if (/^\s*<(!doctype|html)/i.test(text)) throw new OldServerError(url || r.url || 'servidor');
     throw new Error(`Resposta inesperada do servidor (HTTP ${r.status}).`);
+  }
+}
+export async function safeReadJson<T = any>(r: Response, fallback: T, url: string = ''): Promise<T> {
+  try {
+    const text = await r.text();
+    if (!text || /^\s*<(!doctype|html|\?xml)/i.test(text)) return fallback;
+    return JSON.parse(text) as T;
+  } catch {
+    return fallback;
   }
 }
 

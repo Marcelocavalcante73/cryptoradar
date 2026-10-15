@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { accessKey } from '../../services/remoteState';
-import { fetchJson } from '../../services/http';
+import { fetchJson, safeReadJson } from '../../services/http';
 
 type Status = { enabled: boolean; provider: string | null } | null;
 let statusPromise: Promise<Status> | null = null;
@@ -9,7 +9,7 @@ let statusPromise: Promise<Status> | null = null;
 const loadStatus = (): Promise<Status> => {
   if (!statusPromise) {
     statusPromise = fetch('/api/ai/status', { signal: AbortSignal.timeout(6000) })
-      .then((r) => (r.ok ? r.json() : null)).then((j) => (j && typeof j.enabled === 'boolean' ? j : null)).catch(() => { statusPromise = null; return null; });
+      .then((r) => safeReadJson<any>(r, null, '/api/ai/status')).then((j) => (j && typeof j.enabled === 'boolean' ? j : null)).catch(() => { statusPromise = null; return null; });
   }
   return statusPromise;
 };
@@ -41,13 +41,16 @@ export const AiExplain: React.FC<{ kind: 'crypto-signal' | 'crypto-trend' | 'b3-
   if (!status?.enabled) return null;
 
   const ask = async () => {
-    setState({ loading: true });
+    setState({ loading: true, error: undefined });
     try {
       const { ok, status, json: j } = await fetchJson('/api/ai/explain', { method: 'POST', headers: headers(), body: JSON.stringify({ kind, id }), signal: AbortSignal.timeout(35000) });
-      if (!ok) throw new Error(j?.error || `Erro ${status}`);
+      if (!ok || j?.error) throw new Error(j?.error || `Erro ${status}`);
       setState({ loading: false, text: j.text, provider: j.provider });
     } catch (e: any) {
-      setState({ loading: false, error: e?.message || 'Não foi possível explicar agora.' });
+      const msg = e?.name === 'OldServerError' || /versão antiga|não reconhece/i.test(e?.message)
+        ? 'O servidor foi atualizado com novos recursos. Recarregue a página para sincronizar.'
+        : e?.message || 'Não foi possível explicar agora.';
+      setState({ loading: false, error: msg });
     }
   };
 
@@ -74,10 +77,13 @@ export const AiSummary: React.FC<{ section: 'crypto' | 'b3' }> = ({ section }) =
     setState((s) => ({ ...s, loading: true, error: undefined }));
     try {
       const { ok, status, json: j } = await fetchJson(`/api/ai/summary?section=${section}`, { headers: headers(), signal: AbortSignal.timeout(35000) });
-      if (!ok) throw new Error(j?.error || `Erro ${status}`);
+      if (!ok || j?.error) throw new Error(j?.error || `Erro ${status}`);
       setState({ loading: false, text: j.text, provider: j.provider });
     } catch (e: any) {
-      setState({ loading: false, error: e?.message || 'Não foi possível resumir agora.' });
+      const msg = e?.name === 'OldServerError' || /versão antiga|não reconhece/i.test(e?.message)
+        ? 'O servidor foi atualizado com novos recursos. Recarregue a página para sincronizar.'
+        : e?.message || 'Não foi possível resumir agora.';
+      setState({ loading: false, error: msg });
     }
   };
 

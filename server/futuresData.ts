@@ -29,7 +29,9 @@ export function getFuturesProvider(): FuturesProvider | null {
 async function getJson(name: string, url: string, timeoutMs = 8000): Promise<any> {
   const r = await fetch(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(timeoutMs) });
   if (!r.ok) throw new Error(`${name} HTTP ${r.status}`);
-  return r.json();
+  const text = await r.text();
+  if (!text || text.trim().startsWith('<')) throw new Error(`${name} retornou resposta inválida (HTML)`);
+  return JSON.parse(text);
 }
 
 /** Nos perpétuos de preço baixo, o contrato usa múltiplos (1000PEPEUSDT); na OKX o contrato é só PEPE. */

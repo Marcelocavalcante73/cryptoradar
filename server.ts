@@ -10,6 +10,7 @@ import { binanceGet } from './server/universe';
 import { getBatchJob, startBatchJob } from './server/backtestJob';
 import { getLabJob, startLabJob } from './server/b3LabJob';
 import { aiConfig, aiExplain, aiSummary } from './server/aiAnalyst';
+import { getAiEngineState, runAiEngineScan, evaluateSignalWithAiEngine, loadAiEngineState } from './server/aiEngine';
 import { getB3State, runB3Scan, startB3Scanner, ensureB3Scan, loadB3State } from './server/b3Scanner';
 import { getTrendState, runTrendScan, startTrendScanner, ensureTrendScan, loadTrendState } from './server/trendScanner';
 import { futuresKlines, futuresPrices, getFuturesProvider } from './server/futuresData';
@@ -254,6 +255,27 @@ app.get('/api/futures/klines', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/klines?symbol=BTCUSDT&interval=4h&limit=300&market=spot|futures — proxy unificado de candles para spot e futuros.
+ */
+app.get('/api/klines', async (req: Request, res: Response) => {
+  const symbol = String(req.query.symbol || '').toUpperCase();
+  const interval = String(req.query.interval || '4h');
+  const market = parseMarket(req.query.market);
+  const limit = Math.min(1000, Math.max(10, Number(req.query.limit) || 300));
+  if (!/^[A-Z0-9]{3,20}USDT$/.test(symbol)) return res.status(400).json({ error: 'symbol inválido.' });
+  if (!['15m', '1h', '4h', '1d', '1w'].includes(interval)) return res.status(400).json({ error: 'interval inválido.' });
+  try {
+    if (market === 'futures') {
+      return res.json(await futuresKlines(symbol, interval, limit));
+    }
+    const raw = await binanceGet(`/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`, 8000, 'spot');
+    res.json(raw);
+  } catch (e: any) {
+    res.status(502).json({ error: `Falha ao consultar candles: ${e?.message ?? 'indisponível'}` });
+  }
+});
+
+/**
  * GET /api/backtest?symbol=BTCUSDT&tf=1h&bars=2000 — backtest do motor de sinais no histórico real.
  */
 app.get('/api/backtest', async (req: Request, res: Response) => {
@@ -381,12 +403,48 @@ app.get('/api/ai/status', (_req: Request, res: Response) => { const c = aiConfig
 app.post('/api/ai/explain', async (req: Request, res: Response) => {
   if (!aiGuard(req, res)) return;
   const r = await aiExplain(req.body?.kind, req.body?.id);
-  res.status(r.status).json(r.json);
+  const status = (r.status === 502 || r.status === 503 || r.status === 504 || r.status === 403) ? 500 : r.status;
+  res.status(status).json(r.json);
 });
 app.get('/api/ai/summary', async (req: Request, res: Response) => {
   if (!aiGuard(req, res)) return;
   const r = await aiSummary(req.query.section);
-  res.status(r.status).json(r.json);
+  const status = (r.status === 502 || r.status === 503 || r.status === 504 || r.status === 403) ? 500 : r.status;
+  res.status(status).json(r.json);
+});
+
+/**
+ * MOTOR DE INTELIGÊNCIA ARTIFICIAL (GEMINI):
+ * GET  /api/ai/engine?market=spot|futures    consulta estado e sinais gerados pelo motor
+ * POST /api/ai/engine/scan                   executa varredura e geração de sinais pelo motor de IA
+ * POST /api/ai/engine/evaluate               avalia e valida um sinal com o motor de IA
+ */
+app.get('/api/ai/engine', (req: Request, res: Response) => {
+  const market = parseMarket(req.query.market);
+  res.json(getAiEngineState(market));
+});
+
+app.post('/api/ai/engine/scan', async (req: Request, res: Response) => {
+  if (!aiGuard(req, res)) return;
+  const market = parseMarket(req.body?.market || req.query.market);
+  try {
+    const result = await runAiEngineScan(market);
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'Erro ao executar o Motor de IA' });
+  }
+});
+
+app.post('/api/ai/engine/evaluate', async (req: Request, res: Response) => {
+  if (!aiGuard(req, res)) return;
+  const signal = req.body?.signal;
+  if (!signal || !signal.symbol) return res.status(400).json({ error: 'Sinal inválido para o Motor de IA.' });
+  try {
+    const evaluation = await evaluateSignalWithAiEngine(signal);
+    res.json(evaluation);
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'Falha ao avaliar com o Motor de IA.' });
+  }
 });
 
 /**
@@ -467,7 +525,7 @@ async function startServer() {
   }
 
   // Restaura o último resultado antes de aceitar pedidos: o servidor responde com dados desde o primeiro acesso
-  await Promise.all([loadScanners(), loadTrendState(), loadB3State()]);
+  await Promise.all([loadScanners(), loadTrendState(), loadB3State(), loadAiEngineState()]);
 
   if (process.env.SCANNER_ENABLED !== 'false') {
     startScanner(Number(process.env.SCAN_INTERVAL_MINUTES) || 5);

@@ -58,7 +58,10 @@ export type SignalStrategy =
   | 'BREAKOUT_RESISTANCE'
   | 'SUPPORT_RETEST'
   | 'MEAN_REVERSION'
-  | 'VOLUME_SPIKE';
+  | 'VOLUME_SPIKE'
+  | 'AI_ENGINE_MOMENTUM'
+  | 'AI_ENGINE_BREAKOUT'
+  | 'AI_ENGINE_REVERSAL';
 
 export type SignalStatus = 'OPEN' | 'TARGET_HIT' | 'STOP_HIT' | 'EXPIRED';
 
@@ -83,6 +86,15 @@ export interface TechnicalSignal {
   timestamp: string;
   isDemo: boolean; // true = sinal de demonstração (mock); false = gerado pelo motor com dados reais
   disclaimer: string;
+  isAiGenerated?: boolean;
+  aiEngine?: {
+    isAiGenerated: boolean;
+    confidence: number;
+    verdict: string;
+    thesis: string;
+    riskLevel?: 'BAIXO' | 'MEDIO' | 'ALTO';
+    analyzedAt: number;
+  };
 }
 
 export type OrderType = 'MARKET' | 'LIMIT';

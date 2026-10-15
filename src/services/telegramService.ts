@@ -42,6 +42,8 @@ export function validateTelegramDestination(chatId: string): { isValid: boolean;
   return { isValid: true };
 }
 
+import { safeReadJson } from './http';
+
 /**
  * Consulta o backend para verificar se TELEGRAM_BOT_TOKEN está configurado no servidor.
  */
@@ -53,7 +55,7 @@ export async function getTelegramServerStatus(): Promise<TelegramBackendStatus> 
     });
 
     if (response.ok) {
-      const data = await response.json();
+      const data = await safeReadJson<any>(response, null, '/api/telegram/status');
       return {
         configured: Boolean(data?.configured),
         service: 'telegram',
@@ -110,7 +112,7 @@ export async function sendTelegramTestMessage(
       signal: AbortSignal.timeout(8000)
     });
 
-    const data = await response.json().catch(() => null);
+    const data = await safeReadJson<any>(response, null, '/api/telegram/test');
 
     if (response.ok && data?.success) {
       return {

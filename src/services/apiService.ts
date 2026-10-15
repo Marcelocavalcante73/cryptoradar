@@ -1,4 +1,5 @@
 import { CryptoAsset, CandleData, Timeframe } from '../types/crypto';
+import { readJson, safeReadJson } from './http';
 import { INITIAL_ASSETS, generateCandlesForAsset } from './mockData';
 import { calculateAllIndicators } from './indicators';
 
@@ -443,7 +444,7 @@ export class CryptoApiService implements MarketDataProvider {
       try {
         const localRes = await fetch('/api/market/tickers', { signal: AbortSignal.timeout(3000) });
         if (localRes.ok) {
-          const list = await localRes.json();
+          const list = await safeReadJson<any[] | null>(localRes, null, '/api/market/tickers');
           if (Array.isArray(list) && list.length > 0) {
             rawData = list;
           }
@@ -466,7 +467,7 @@ export class CryptoApiService implements MarketDataProvider {
               signal: AbortSignal.timeout(4000)
             });
             if (response.ok) {
-              const parsed = await response.json();
+              const parsed = await safeReadJson<any[] | null>(response, null, url);
               if (Array.isArray(parsed) && parsed.length > 0) {
                 rawData = parsed;
                 break;
@@ -589,7 +590,7 @@ export class CryptoApiService implements MarketDataProvider {
             signal: AbortSignal.timeout(5000)
           });
           if (!r.ok) continue;
-          const raw = await r.json();
+          const raw = await safeReadJson<any[] | null>(r, null, `${host}/api/v3/ticker/24hr`);
           if (!Array.isArray(raw)) continue;
           for (const t of raw) {
             const price = parseFloat(t.lastPrice);
@@ -620,7 +621,7 @@ export class CryptoApiService implements MarketDataProvider {
   }
 
   /**
-   * Candles dos perpétuos USDT-M, via proxy do servidor (/api/futures/klines).
+   * Candles dos perpétuos USDT-M, via proxy do servidor (/api/futures/klines ou /api/klines).
    * Sem resposta real, devolve isLive=false e lista vazia: nunca inventa candles.
    */
   async fetchFuturesKlines(symbol: string, timeframe: Timeframe, limit: number = 300): Promise<KlineFetchResult> {
@@ -631,7 +632,7 @@ export class CryptoApiService implements MarketDataProvider {
         signal: AbortSignal.timeout(8000)
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const raw = await r.json();
+      const raw = await readJson(r, '/api/futures/klines');
       if (!Array.isArray(raw)) throw new Error('resposta inválida');
       const parsed: CandleData[] = [];
       for (const k of raw) {
@@ -651,10 +652,10 @@ export class CryptoApiService implements MarketDataProvider {
   }
 
   /**
-   * Consulta candles históricos reais na API pública oficial da Binance.
+   * Consulta candles históricos reais.
+   * 1º tenta o proxy local do backend (/api/klines).
+   * Se o backend não responder, tenta os espelhos oficiais da Binance (Vision sem bloqueio regional).
    * Suporta timeframes 15m, 1h, 4h, 1D, 1W.
-   * Não mistura candles sintéticos com reais. Se a API falhar, reporta explicitamente
-   * o estado offline/demonstração.
    */
   async fetchHistoricalKlines(
     symbol: string,
@@ -665,8 +666,9 @@ export class CryptoApiService implements MarketDataProvider {
     const interval = timeframeToBinanceInterval(timeframe);
     const decimals = assetFallback ? priceDecimals(assetFallback.price) : 4;
 
-    // Tentativas ordenadas: mirror público oficial Binance Vision (sem bloqueio) e endpoint principal
+    // Tentativas ordenadas: proxy do servidor local primeiro, depois mirror público oficial Vision e endpoint principal
     const endpoints = [
+      `/api/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}&market=spot`,
       `https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`,
       `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
     ];
@@ -677,7 +679,7 @@ export class CryptoApiService implements MarketDataProvider {
       try {
         const response = await fetch(url, {
           headers: { Accept: 'application/json' },
-          signal: AbortSignal.timeout(5000)
+          signal: AbortSignal.timeout(6000)
         });
 
         if (!response.ok) {
@@ -685,7 +687,7 @@ export class CryptoApiService implements MarketDataProvider {
           continue;
         }
 
-        const rawKlines = await response.json();
+        const rawKlines = await readJson(response, url);
         if (!Array.isArray(rawKlines) || rawKlines.length === 0) {
           lastError = 'Resposta de klines vazia ou formato inválido';
           continue;

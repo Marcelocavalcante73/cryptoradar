@@ -52,7 +52,10 @@ const STRATEGY_NAMES: Record<SignalStrategy, string> = {
   BREAKOUT_RESISTANCE: 'Rompimento com Volume',
   SUPPORT_RETEST: 'Reteste de Suporte',
   MEAN_REVERSION: 'Reversão à Média',
-  VOLUME_SPIKE: 'Pico de Volume'
+  VOLUME_SPIKE: 'Pico de Volume',
+  AI_ENGINE_MOMENTUM: 'Motor IA: Momentum',
+  AI_ENGINE_BREAKOUT: 'Motor IA: Rompimento',
+  AI_ENGINE_REVERSAL: 'Motor IA: Reversão'
 };
 
 const DISCLAIMER =
