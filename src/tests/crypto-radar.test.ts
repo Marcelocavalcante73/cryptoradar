@@ -65,7 +65,7 @@ import { runTrendBacktest, btcRegimeByDay, TREND_RULES } from '../services/trend
 import { marketTrend, detectIndicatorEntry, updateIndicatorSignal, indicatorSignalResult, evaluateB3Readiness, b3Sizing, B3Signal } from '../services/b3Signals';
 import { aiConfig, generateText, resetAiState, takeBudget } from '../../server/aiAnalyst';
 import { newRobotState, robotStep, robotStats, robotEquity, sanitizeConfig, DEFAULT_ROBOT_CONFIG, ROBOT_COST, SourceSignal } from '../services/robot';
-import { runRobot, getRobot, resetRobotState, updateRobotConfig, resetRobot } from '../../server/robot';
+import { runRobot, ensureRobot, getRobot, resetRobotState, updateRobotConfig, resetRobot } from '../../server/robot';
 import { guardSignals, resolveOutcome, liveStats } from '../services/aiGuards';
 import { runAiEngineScan, getAiEngineState, resetAiEngineStates, refreshAiOutcomes } from '../../server/aiEngine';
 import { scanners } from '../../server/scanner';
@@ -2365,6 +2365,15 @@ console.log('\n--- Robô simulado ---');
   const off = robotStep({ ...r1.state, config: { ...r1.state.config, enabled: false } }, [sg('a', 'AAA')], px({ AAA: 94 }), T + 2 * H);
   assert(off.state.positions.length === 0, 'Robô: desligado ainda encerra posições abertas (stop)');
 
+  // Servidor dormiu: as velas de 1h aplicam stop e alvo tocados no intervalo, pelo preço do stop/alvo e na hora da vela
+  const bar = (i: number, high: number, low: number) => ({ timestamp: T + i * H, high, low, close: 100 });
+  const gap1 = robotStep(r1.state, [sg('a', 'AAA')], px({ AAA: 101 }), T + 10 * H, new Map([['AAAUSDT', [bar(-1, 90, 80), bar(0, 101, 99), bar(3, 102, 94), bar(5, 110, 100)]]]));
+  assert(gap1.state.trades[0]?.reason === 'stop atingido' && Math.abs(gap1.state.trades[0].exitPrice - 95 * (1 - ROBOT_COST)) < 1e-9 && gap1.state.trades[0].closedAt === T + 4 * H, 'Robô: o preço voltou, mas as velas mostram que o stop foi tocado de madrugada => sai pelo stop, na hora da vela', JSON.stringify(gap1.state.trades[0]));
+  assert(robotStep(r1.state, [sg('a', 'AAA')], px({ AAA: 101 }), T + 10 * H, new Map([['AAAUSDT', [bar(-1, 90, 80), bar(0, 101, 99)]]])).state.positions.length === 1, 'Robô: vela anterior à compra e sem toque no stop não encerra');
+  const tgt2 = robotStep(on(), [sg('t', 'TTT', { source: 'ai', targetPrice: 110 })], px({ TTT: 100 }), T);
+  assert(robotStep(tgt2.state, [sg('t', 'TTT', { source: 'ai', targetPrice: 110 })], px({ TTT: 100 }), T + 10 * H, new Map([['TTTUSDT', [bar(2, 111, 99)]]])).state.trades[0]?.reason === 'alvo atingido', 'Robô: alvo tocado nas velas fecha pelo alvo mesmo que o preço atual tenha voltado');
+  assert(robotStep(r1.state, [sg('a', 'AAA')], px({ AAA: 101 }), T + 10 * H, new Map([['AAAUSDT', [bar(3, 112, 94)]]])).state.trades[0].reason === 'stop atingido', 'Robô: stop e alvo na mesma vela valem o stop');
+
   // Perda máxima no dia pausa novas entradas e volta no dia seguinte
   let st = r1.state;
   st = robotStep(st, [sg('a', 'AAA')], px({ AAA: 100 }), T + H).state;
@@ -2413,6 +2422,30 @@ console.log('\n--- Robô simulado ---');
   assert(!run3.ok && getRobot().lastError !== null && getRobot().state.positions.length === 0 && getRobot().state.config.riskPct === 2, 'Robô servidor: sem preços, não compra e mostra o erro', run3.message);
   resetRobot(5000);
   assert(getRobot().state.config.startCapital === 5000 && getRobot().state.config.enabled === false && getRobot().state.cash === 5000 && getRobot().state.trades.length === 0, 'Robô servidor: zerar a carteira recomeça do capital novo, desligado');
+  // O servidor dormiu: ao ser consultado, recupera o que perdeu usando as velas de 1h
+  resetRobotState(); resetTrendState();
+  updateRobotConfig({ enabled: true });
+  const tNow = Date.now();
+  getTrendState().signals.unshift({ id: 'SLP-1', symbol: 'SLPUSDT', baseAsset: 'SLP', signalDay: tNow - 86400000, createdAt: tNow - H, refPrice: 10, entryPrice: 10, stopPrice: 9.5, atr: 0.25, exitLevel: 9.4, status: 'OPEN', lastPrice: 10 } as any);
+  let slpHour = 'calm';
+  globalThis.fetch = ((url: any) => {
+    const u = String(url);
+    if (u.includes('/api/v3/ticker/price')) return Promise.resolve(new Response(JSON.stringify([{ symbol: 'SLPUSDT', price: '10' }]), { status: 200 }));
+    if (u.includes('/api/v3/klines')) {
+      const t0 = Math.floor(Date.now() / H) * H;
+      return Promise.resolve(new Response(JSON.stringify(Array.from({ length: 3 }, (_, i) => [t0 + (i - 2) * H + H * 0.5 + (slpHour === 'calm' ? -H : 0), '10', '10.2', slpHour === 'crash' && i === 1 ? '9.0' : '9.9', '10', '1'])), { status: 200 }));
+    }
+    return Promise.reject(new Error('url inesperada: ' + u));
+  }) as typeof fetch;
+  await ensureRobot(0, 5000);
+  assert(getRobot().state.positions.length === 1, 'Robô servidor: ao ser consultado, o robô desatualizado roda um ciclo e compra');
+  slpHour = 'crash';
+  getRobot().state.positions[0].openedAt = tNow - 5 * H; getRobot().state.lastTickAt = tNow - 3 * 3600e3;
+  await ensureRobot(6 * 60e3, 5000);
+  assert(getRobot().state.positions.length === 0 && getRobot().state.trades[0]?.reason === 'stop atingido', 'Robô servidor: ao ser consultado depois de dormir, confere as velas de 1h e aplica o stop que foi tocado', JSON.stringify(getRobot().state.trades[0]));
+  const ticks = getRobot().state.lastTickAt;
+  await ensureRobot(6 * 60e3, 5000);
+  assert(getRobot().state.lastTickAt === ticks, 'Robô servidor: se o último ciclo é recente, não roda de novo');
   globalThis.fetch = realFetchR;
   resetRobotState(); resetTrendState();
 }

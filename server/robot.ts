@@ -6,7 +6,7 @@
 
 import {
   RobotConfig, RobotState, RobotEvent, SourceSignal, DEFAULT_ROBOT_CONFIG,
-  newRobotState, robotStep, robotStats, sanitizeConfig
+  newRobotState, robotStep, robotStats, sanitizeConfig, HourBar
 } from '../src/services/robot';
 import { getTrendState } from './trendScanner';
 import { getAiEngineState } from './aiEngine';
@@ -63,6 +63,28 @@ async function fetchPrices(): Promise<Map<string, number>> {
   return new Map(raw.map((p) => [p.symbol, parseFloat(p.price)]));
 }
 
+/** Velas de 1h das últimas ~8 dias das posições abertas: cobrem o tempo em que o servidor esteve parado. */
+async function fetchBars(symbols: string[]): Promise<Map<string, HourBar[]>> {
+  const out = new Map<string, HourBar[]>();
+  await Promise.all(symbols.map(async (sym) => {
+    try {
+      const raw = (await binanceGet(`/api/v3/klines?symbol=${sym}&interval=1h&limit=200`, 8000, 'spot')) as any[];
+      out.set(sym, raw.map((k) => ({ timestamp: Number(k[0]), high: parseFloat(k[2]), low: parseFloat(k[3]), close: parseFloat(k[4]) })));
+    } catch { /* sem velas: usa só o preço atual */ }
+  }));
+  return out;
+}
+
+/** Roda um ciclo se o último está velho (ex.: o servidor dormiu) e espera até `waitMs`, mantendo a requisição aberta. */
+export async function ensureRobot(maxAgeMs = 6 * 60e3, waitMs = 0): Promise<void> {
+  if (process.env.ROBOT_AUTO === 'false') return;
+  const stale = state.lastTickAt === null || Date.now() - state.lastTickAt > maxAgeMs;
+  if (!busy && stale) {
+    const p = runRobot();
+    if (waitMs > 0) await Promise.race([p, new Promise((r) => setTimeout(r, waitMs))]);
+  }
+}
+
 const alertText = (e: RobotEvent) => `${e.kind === 'entry' ? '🤖 *[ROBÔ] COMPRA SIMULADA*' : e.kind === 'exit' ? '🔔 *[ROBÔ] SAÍDA SIMULADA*' : '⚠️ *[ROBÔ]*'}\n${e.text}\n\n_Simulação, sem dinheiro real._`;
 
 /** Um ciclo do robô. Roda mesmo desligado, para acompanhar e encerrar posições abertas. */
@@ -73,7 +95,8 @@ export async function runRobot(): Promise<{ ok: boolean; message: string }> {
     const signals = collectSignals();
     const needPrices = state.positions.length > 0 || (state.config.enabled && signals.some((s) => s.state === 'OPEN'));
     const prices = needPrices ? await fetchPrices() : new Map<string, number>();
-    const r = robotStep(state, signals, prices);
+    const bars = state.positions.length ? await fetchBars([...new Set(state.positions.map((p) => p.symbol))]) : new Map<string, HourBar[]>();
+    const r = robotStep(state, signals, prices, Date.now(), bars);
     state = r.state;
     lastError = null;
     save();

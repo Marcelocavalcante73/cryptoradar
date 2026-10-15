@@ -21,7 +21,7 @@ export const RobotView: React.FC = () => {
 
   const load = useCallback(async () => {
     try {
-      const { json } = await fetchJson<RobotPayload>('/api/robot', { signal: AbortSignal.timeout(8000) });
+      const { json } = await fetchJson<RobotPayload>('/api/robot?wait=1', { signal: AbortSignal.timeout(28000) });
       setD(json); setError(null);
     } catch (e: any) { setError(e?.message || 'Não foi possível carregar o robô.'); }
   }, []);
