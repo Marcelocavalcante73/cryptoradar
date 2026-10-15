@@ -11,6 +11,7 @@ import { getBatchJob, startBatchJob } from './server/backtestJob';
 import { getLabJob, startLabJob } from './server/b3LabJob';
 import { aiConfig, aiExplain, aiSummary } from './server/aiAnalyst';
 import { getAiEngineState, runAiEngineScan, evaluateSignalWithAiEngine, loadAiEngineState } from './server/aiEngine';
+import { getAiSwingState, runAiSwing, loadAiSwing, startAiSwing } from './server/aiSwing';
 import { getB3State, runB3Scan, startB3Scanner, ensureB3Scan, loadB3State } from './server/b3Scanner';
 import { getTrendState, runTrendScan, startTrendScanner, ensureTrendScan, loadTrendState } from './server/trendScanner';
 import { futuresKlines, futuresPrices, getFuturesProvider } from './server/futuresData';
@@ -406,6 +407,17 @@ app.post('/api/ai/explain', async (req: Request, res: Response) => {
   const status = (r.status === 502 || r.status === 503 || r.status === 504 || r.status === 403) ? 500 : r.status;
   res.status(status).json(r.json);
 });
+/**
+ *  GET  /api/ai/swing        motor de IA da B3: sinais, decisões da última rodada e mercado
+ *  POST /api/ai/swing/run    pede uma rodada de decisões agora
+ */
+app.get('/api/ai/swing', (_req: Request, res: Response) => { res.json(getAiSwingState()); });
+app.post('/api/ai/swing/run', async (req: Request, res: Response) => {
+  if (!aiGuard(req, res)) return;
+  if (!aiConfig().enabled) return res.status(503).json({ error: 'A IA está desligada. Defina GEMINI_API_KEY ou OPENAI_API_KEY no servidor.' });
+  const r = await runAiSwing(true);
+  res.status(r.ok ? 200 : 502).json({ ...r, state: getAiSwingState() });
+});
 app.get('/api/ai/summary', async (req: Request, res: Response) => {
   if (!aiGuard(req, res)) return;
   const r = await aiSummary(req.query.section);
@@ -525,12 +537,13 @@ async function startServer() {
   }
 
   // Restaura o último resultado antes de aceitar pedidos: o servidor responde com dados desde o primeiro acesso
-  await Promise.all([loadScanners(), loadTrendState(), loadB3State(), loadAiEngineState()]);
+  await Promise.all([loadScanners(), loadTrendState(), loadB3State(), loadAiEngineState(), loadAiSwing()]);
 
   if (process.env.SCANNER_ENABLED !== 'false') {
     startScanner(Number(process.env.SCAN_INTERVAL_MINUTES) || 5);
     startTrendScanner();
     startB3Scanner();
+    startAiSwing();
   }
 
   app.listen(PORT, '0.0.0.0', () => {

@@ -43,7 +43,7 @@ let usage = { day: '', n: 0 };
 
 const dailyLimit = () => Math.max(1, Number(process.env.AI_DAILY_LIMIT) || 150);
 
-function takeBudget(): boolean {
+export function takeBudget(): boolean {
   const day = new Date().toISOString().slice(0, 10);
   if (usage.day !== day) usage = { day, n: 0 };
   if (usage.n >= dailyLimit()) return false;
@@ -54,7 +54,12 @@ function takeBudget(): boolean {
 /** Só para testes. */
 export function resetAiState() { cache.clear(); usage = { day: '', n: 0 }; }
 
-export async function generateText(system: string, user: string, timeoutMs = 25000): Promise<string> {
+export interface GenOptions { json?: boolean; temperature?: number; maxTokens?: number; timeoutMs?: number }
+
+export async function generateText(system: string, user: string, opts: GenOptions | number = {}): Promise<string> {
+  const o: GenOptions = typeof opts === 'number' ? { timeoutMs: opts } : opts;
+  const timeoutMs = o.timeoutMs ?? 25000;
+  const temperature = o.temperature ?? 0.3;
   const cfg = aiConfig();
   if (!cfg.enabled || !cfg.provider || !cfg.model) throw new Error('IA desligada');
   if (cfg.provider === 'gemini') {
@@ -69,7 +74,7 @@ export async function generateText(system: string, user: string, timeoutMs = 250
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: system }] },
             contents: [{ role: 'user', parts: [{ text: user }] }],
-            generationConfig: { temperature: 0.3, maxOutputTokens: 1500 }
+            generationConfig: { temperature, maxOutputTokens: o.maxTokens ?? 1500, ...(o.json ? { responseMimeType: 'application/json' } : {}) }
           }),
           signal: AbortSignal.timeout(timeoutMs)
         });
@@ -114,7 +119,7 @@ export async function generateText(system: string, user: string, timeoutMs = 250
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.OPENAI_API_KEY!.trim()}` },
     body: JSON.stringify({
-      model: cfg.model, temperature: 0.3, max_completion_tokens: 700,
+      model: cfg.model, temperature, max_completion_tokens: o.maxTokens ?? 700, ...(o.json ? { response_format: { type: 'json_object' } } : {}),
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }]
     }),
     signal: AbortSignal.timeout(timeoutMs)

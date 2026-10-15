@@ -1,7 +1,7 @@
 import React from 'react';
-import { Radio, Wallet, TrendingUp, Activity, ListChecks } from 'lucide-react';
+import { Radio, Wallet, TrendingUp, Activity, ListChecks, Sparkles } from 'lucide-react';
 
-export type ScreenTab = 'signals' | 'wallet' | 'market' | 'settings' | 'details' | 'backtest' | 'trend' | 'b3signals' | 'b3trend' | 'b3track';
+export type ScreenTab = 'signals' | 'wallet' | 'market' | 'settings' | 'details' | 'backtest' | 'trend' | 'b3signals' | 'b3trend' | 'b3track' | 'b3ai';
 export type AppSection = 'spot' | 'futures' | 'b3' | 'crypto';
 
 interface BottomNavProps {
@@ -13,12 +13,14 @@ interface BottomNavProps {
   section?: AppSection;
   b3Signals?: number;
   b3Trend?: number;
+  b3Ai?: number;
 }
 
-export const BottomNav: React.FC<BottomNavProps> = ({ activeTab, onSelectTab, openSignals, openPositions, openTrend = 0, section = 'spot', b3Signals = 0, b3Trend = 0 }) => {
+export const BottomNav: React.FC<BottomNavProps> = ({ activeTab, onSelectTab, openSignals, openPositions, openTrend = 0, section = 'spot', b3Signals = 0, b3Trend = 0, b3Ai = 0 }) => {
   const items = section === 'b3' ? [
     { id: 'b3signals' as ScreenTab, label: 'Sinais', icon: Radio, count: b3Signals },
     { id: 'b3trend' as ScreenTab, label: 'Tendência', icon: Activity, count: b3Trend },
+    { id: 'b3ai' as ScreenTab, label: 'IA', icon: Sparkles, count: b3Ai },
     { id: 'b3track' as ScreenTab, label: 'Resultados', icon: ListChecks, count: 0 }
   ] : section === 'futures' ? [
     { id: 'signals' as ScreenTab, label: 'Sinais', icon: Radio, count: openSignals },
